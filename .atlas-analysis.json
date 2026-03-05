@@ -1,0 +1,146 @@
+{
+  "projectType": "saas",
+  "projectName": "Defensoría Civil - Sistema de Divorcios",
+  "projectDescription": "AI-powered legal assistance platform for automated divorce processing via WhatsApp in Argentina",
+  "theme": "linden",
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "features",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "quickstart",
+              "installation",
+              "configuration"
+            ]
+          },
+          {
+            "group": "User Guide",
+            "pages": [
+              "user-guide/whatsapp-flow",
+              "user-guide/case-workflow",
+              "user-guide/dashboard"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/clean-architecture",
+              "concepts/memory-system",
+              "concepts/state-machine",
+              "concepts/validation"
+            ]
+          },
+          {
+            "group": "AI & Intelligence",
+            "pages": [
+              "ai/llm-integration",
+              "ai/memory-types",
+              "ai/hallucination-detection",
+              "ai/ocr-processing"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/production",
+              "deployment/security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "REST API",
+            "pages": [
+              "api/overview",
+              "api/authentication",
+              "api/webhooks",
+              "api/cases",
+              "api/metrics"
+            ]
+          },
+          {
+            "group": "Use Cases",
+            "pages": [
+              "api/use-cases/process-message",
+              "api/use-cases/authenticate-user",
+              "api/use-cases/ingest-document"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "api/services/conversation-engine",
+              "api/services/memory-service",
+              "api/services/validation-services"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Development",
+        "groups": [
+          {
+            "group": "Contributing",
+            "pages": [
+              "development/setup",
+              "development/testing",
+              "development/coding-standards"
+            ]
+          },
+          {
+            "group": "Extending",
+            "pages": [
+              "development/custom-phases",
+              "development/llm-providers",
+              "development/validation-rules"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "WhatsApp conversational interface with intelligent state machine",
+    "Multi-tier memory system (immediate, session, episodic, semantic)",
+    "Hallucination detection for LLM responses",
+    "OCR for document extraction (DNI, marriage certificates)",
+    "Admin dashboard for case management",
+    "Legal document generation (PDF petitions)",
+    "Rate limiting and security headers",
+    "Clean Architecture implementation with SOLID principles"
+  ],
+  "publicApiSurface": [
+    "POST /webhook/whatsapp - Process incoming WhatsApp messages",
+    "POST /api/auth/login - Authenticate operators",
+    "GET /api/cases/ - List divorce cases",
+    "GET /api/cases/{id} - Get case details",
+    "PATCH /api/cases/{id} - Update case",
+    "POST /api/cases/{id}/documents/request - Request documents from user",
+    "POST /api/cases/{id}/pdf/generate - Generate legal petition PDF",
+    "GET /api/metrics/summary - System metrics",
+    "GET /health/ - Health check endpoint",
+    "ProcessIncomingMessageUseCase - Main message processing use case",
+    "ConversationEngine - State machine and flow handler",
+    "MemoryService - Contextual memory management",
+    "HallucinationDetectionService - Response validation",
+    "MultiProviderOCRService - Document OCR processing"
+  ]
+}
