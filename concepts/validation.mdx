@@ -1,0 +1,725 @@
+---
+title: Validation
+description: Multi-layer validation system for legal data integrity and security
+---
+
+# Validation
+
+The Defensoría Civil platform implements a **comprehensive validation system** to ensure data integrity, legal compliance, and security across all user inputs and LLM outputs.
+
+## Validation Layers
+
+```
+┌─────────────────────────────────────────┐
+│  1. Input Safety Layer                  │  ← Prompt injection detection
+├─────────────────────────────────────────┤
+│  2. Response Validation                 │  ← Field-specific validation
+├─────────────────────────────────────────┤
+│  3. Date Validation                     │  ← Age, logic, legal rules
+├─────────────────────────────────────────┤
+│  4. Address Validation                  │  ← Jurisdiction, format
+├─────────────────────────────────────────┤
+│  5. Hallucination Detection             │  ← LLM output verification
+├─────────────────────────────────────────┤
+│  6. Output Safety Layer                 │  ← PII redaction
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 1. Safety Layer (Prompt Injection Protection)
+
+**Location:** `backend/src/infrastructure/ai/safety_layer.py`
+
+**Purpose:** Detect and block prompt injection attempts in user input.
+
+### Input Filtering
+
+```python
+INJECTION_PATTERNS = [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "you are now",
+    "act as",
+    "SYSTEM:",
+    "system:",
+]
+
+class SafetyLayer:
+    def filter_input(self, text: str) -> SafetyResult:
+        """Detects simple prompt injection attempts"""
+        
+        lowered = text.lower()
+        for pattern in INJECTION_PATTERNS:
+            if pattern.lower() in lowered:
+                logger.warning(
+                    "safety_layer_prompt_injection_detected",
+                    pattern=pattern,
+                    text_preview=text[:200],
+                )
+                return SafetyResult(
+                    allowed=False,
+                    text=text,
+                    reason=f"Posible prompt injection detectado: '{pattern}'",
+                )
+        
+        return SafetyResult(allowed=True, text=text, reason=None)
+```
+
+### Usage in Conversation Engine
+
+```python
+# backend/src/application/services/conversation_engine.py
+async def handle_incoming(self, phone: str, text: str) -> str:
+    # Check for prompt injection
+    safety_result = self.safety.filter_input(text)
+    
+    if not safety_result.allowed:
+        reply = (
+            "No puedo procesar esa solicitud. Por favor reformulá tu mensaje "
+            "sin instrucciones técnicas hacia el sistema."
+        )
+        return reply
+    
+    # Continue processing...
+```
+
+### PII Redaction in Output
+
+```python
+PII_PATTERNS = {
+    "cuit": re.compile(r"\b\d{2}-?\d{7,8}-?\d\b"),
+    "dni": re.compile(r"\b\d{7,8}\b"),
+    "phone": re.compile(r"\+?\d{10,15}"),
+    "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+}
+
+def filter_output(self, text: str) -> SafetyResult:
+    """Redacts PII (DNI, CUIT, phone, email) from LLM output"""
+    
+    redacted = text
+    found = set()
+    
+    for name, pattern in PII_PATTERNS.items():
+        if pattern.search(redacted):
+            found.add(name)
+            placeholder = f"<{name.upper()}>"
+            redacted = pattern.sub(placeholder, redacted)
+    
+    if found:
+        logger.info(
+            "safety_layer_pii_redacted",
+            types=sorted(found),
+            preview=text[:200],
+        )
+    
+    return SafetyResult(allowed=True, text=redacted, reason=None)
+```
+
+---
+
+## 2. Response Validation
+
+**Location:** `backend/src/infrastructure/validation/response_validation_service_impl.py`
+
+**Purpose:** Validate user responses for appropriate content, format, and intent.
+
+### Detection Rules
+
+```python
+JOKE_WORDS = ["jaja", "jeje", "jiji", "xd", "a molestar", "broma"]
+INAPPROPRIATE = ["insulto", "tonto", "idiota", "mierda"]
+INJECTION_PATTERNS = [
+    r"\bignora\b", r"\bolvida\b", r"\basistente\b", r"\bsistema\b",
+    r"^system:", r"^assistant:", r"^user:", r"```", r"###"
+]
+```
+
+### Validation Implementation
+
+```python
+class SimpleResponseValidationService(ResponseValidationService):
+    def validate_user_response(
+        self, 
+        response_text: str, 
+        field_name: str, 
+        question_context: str
+    ) -> ResponseValidationResult:
+        text = (response_text or "").strip()
+        flags = []
+        errors = []
+        
+        if not text:
+            errors.append("Respuesta vacía.")
+        
+        low = text.lower()
+        
+        # Detect jokes/non-serious responses
+        if any(w in low for w in JOKE_WORDS):
+            flags.append("humor")
+            errors.append("Respuesta no seria detectada.")
+        
+        # Detect inappropriate content
+        if any(w in low for w in INAPPROPRIATE):
+            flags.append("inapropiada")
+            errors.append("Contenido inapropiado detectado.")
+        
+        # Detect prompt injection attempts
+        if any(re.search(p, low) for p in INJECTION_PATTERNS):
+            flags.append("posible_inyeccion")
+            errors.append("Posible intento de inyección de prompt.")
+        
+        # Field-specific validation
+        if field_name.lower() in ("dni", "documento"):
+            if not re.search(r"\b\d{7,8}\b", low):
+                errors.append("Se espera un DNI de 7-8 dígitos.")
+        
+        if field_name.lower() in ("fecha de nacimiento", "fecha_nacimiento"):
+            if not re.search(r"\b\d{2}/\d{2}/\d{4}\b", low):
+                errors.append("Se espera una fecha en formato DD/MM/AAAA.")
+        
+        if "domicilio" in field_name.lower():
+            if not re.search(r"\d", low):
+                errors.append("El domicilio debe incluir número de calle.")
+        
+        return ResponseValidationResult(len(errors) == 0, errors, flags)
+```
+
+### Usage Example
+
+```python
+# Validate DNI input
+result = self.validator_resp.validate_user_response(
+    text="jaja no te digo", 
+    field_name="dni", 
+    question_context="documento"
+)
+
+if not result.is_valid:
+    # result.errors: ["Respuesta no seria detectada.", "Se espera un DNI de 7-8 dígitos."]
+    return "Ingresá un DNI válido de 7 u 8 dígitos."
+```
+
+---
+
+## 3. Date Validation
+
+**Location:** `backend/src/infrastructure/validation/date_validation_service_impl.py`
+
+**Purpose:** Validate dates with legal constraints (age 18+, marriage after birth, etc.)
+
+### Birth Date Validation
+
+```python
+DATE_FMT = "%d/%m/%Y"
+
+def parse_date(date_str: str) -> date | None:
+    try:
+        return datetime.strptime(date_str.strip(), DATE_FMT).date()
+    except Exception:
+        return None
+
+def years_between(a: date, b: date) -> int:
+    return b.year - a.year - ((b.month, b.day) < (a.month, a.day))
+
+class SimpleDateValidationService(DateValidationService):
+    def validate_birth_date(self, date_str: str) -> DateValidationResult:
+        d = parse_date(date_str)
+        errors = []
+        
+        if not d:
+            errors.append("Formato de fecha inválido. Use DD/MM/AAAA.")
+            return DateValidationResult(False, errors)
+        
+        today = date.today()
+        
+        # Cannot be future
+        if d > today:
+            errors.append("La fecha no puede ser futura.")
+        
+        # Cannot be too old
+        if d.year < 1900:
+            errors.append("La fecha es demasiado antigua.")
+        
+        # Must be 18+
+        age = years_between(d, today)
+        if age < 18:
+            errors.append("Debe ser mayor de 18 años.")
+        
+        return DateValidationResult(
+            len(errors) == 0, 
+            errors, 
+            normalized_date=d.strftime(DATE_FMT),
+            age_years=age
+        )
+```
+
+### Marriage Date Validation
+
+**Legal constraints:**
+- Cannot be in the future
+- Must be after both spouses' birth dates
+- Both spouses must have been 18+ at time of marriage
+
+```python
+def validate_marriage_date(
+    self, 
+    date_str: str, 
+    birth_date_solicitante: str, 
+    birth_date_conyuge: str
+) -> DateValidationResult:
+    d = parse_date(date_str)
+    errors = []
+    
+    if not d:
+        errors.append("Formato de fecha inválido. Use DD/MM/AAAA.")
+        return DateValidationResult(False, errors)
+    
+    today = date.today()
+    if d > today:
+        errors.append("La fecha de matrimonio no puede ser futura.")
+    
+    b1 = parse_date(birth_date_solicitante)
+    b2 = parse_date(birth_date_conyuge)
+    
+    if not b1 or not b2:
+        errors.append("Fechas de nacimiento inválidas.")
+        return DateValidationResult(False, errors)
+    
+    # Marriage must be after birth
+    if d <= b1 or d <= b2:
+        errors.append("La fecha de matrimonio debe ser posterior a las fechas de nacimiento.")
+    
+    # Both must have been 18+ at time of marriage
+    if years_between(b1, d) < 18 or years_between(b2, d) < 18:
+        errors.append("Ambas partes deben tener al menos 18 años al casarse.")
+    
+    return DateValidationResult(len(errors) == 0, errors, normalized_date=d.strftime(DATE_FMT))
+```
+
+### Separation Date Validation
+
+```python
+def validate_separation_date(self, date_str: str, marriage_date: str) -> DateValidationResult:
+    d = parse_date(date_str)
+    errors = []
+    
+    if not d:
+        errors.append("Formato de fecha inválido. Use DD/MM/AAAA.")
+        return DateValidationResult(False, errors)
+    
+    m = parse_date(marriage_date)
+    if not m:
+        errors.append("Fecha de matrimonio inválida.")
+        return DateValidationResult(False, errors)
+    
+    today = date.today()
+    if d > today:
+        errors.append("La fecha de separación no puede ser futura.")
+    
+    # Separation must be after marriage
+    if d < m:
+        errors.append("La fecha de separación debe ser posterior a la fecha de matrimonio.")
+    
+    return DateValidationResult(len(errors) == 0, errors, normalized_date=d.strftime(DATE_FMT))
+```
+
+---
+
+## 4. Address Validation
+
+**Location:** `backend/src/infrastructure/validation/address_validation_service_impl.py`
+
+**Purpose:** Validate address format and jurisdiction (San Rafael/Mendoza).
+
+### Validation Rules
+
+```python
+ALLOWED_JURIS = ["San Rafael", "Mendoza"]  # From environment variable
+
+class SimpleAddressValidationService(AddressValidationService):
+    STREET_REGEX = re.compile(
+        r"(?P<street>[A-Za-zÀ-ÿ'.\s]+)\s+(?P<number>\d+[A-Za-z0-9/-]*)", 
+        re.UNICODE
+    )
+    
+    # Accept both "Ciudad, Provincia" and "Ciudad Provincia"
+    CITY_PROV_REGEX = re.compile(
+        r"(?P<city>[A-Za-zÀ-ÿ'.\s]+)[,\s]+(?P<province>[A-Za-zÀ-ÿ'.\s]+)", 
+        re.UNICODE
+    )
+```
+
+### Validation Implementation
+
+```python
+def validate_address(
+    self, 
+    address_text: str, 
+    is_marital_address: bool = False
+) -> AddressValidationResult:
+    if not address_text or len(address_text.strip()) < 5:
+        return AddressValidationResult(False, ["Dirección vacía o demasiado corta"])
+    
+    text = address_text.strip()
+    errors = []
+    components = {}
+    
+    # Extract street and number
+    m1 = self.STREET_REGEX.search(text)
+    if m1:
+        components.update(m1.groupdict())
+    else:
+        errors.append("Falta calle y número (ej: 'San Martín 123')")
+    
+    # Extract city and province
+    m2 = self.CITY_PROV_REGEX.search(text)
+    if m2:
+        components.update(m2.groupdict())
+    else:
+        errors.append("Falta ciudad y provincia (ej: 'San Rafael, Mendoza')")
+    
+    # Normalize address
+    norm = None
+    if components:
+        norm = f"{components.get('street','').strip()} {components.get('number','').strip()}, {components.get('city','').strip()}, {components.get('province','').strip()}".strip(", ").replace("  "," ")
+    
+    # Jurisdiction validation (for marital address)
+    if is_marital_address:
+        city = components.get("city", "").lower()
+        prov = components.get("province", "").lower()
+        ok = any(j.lower() in city or j.lower() in prov for j in ALLOWED_JURIS)
+        
+        if not ok:
+            errors.append("Domicilio conyugal fuera de jurisdicción (San Rafael/Mendoza).")
+    
+    return AddressValidationResult(
+        len(errors) == 0, 
+        errors, 
+        normalized_address=norm, 
+        components=components if components else None
+    )
+```
+
+### Usage Example
+
+```python
+# Validate marital address (requires San Rafael/Mendoza)
+result = self.validator_addr.validate_address(
+    "San Martín 123, San Rafael, Mendoza",
+    is_marital_address=True
+)
+
+if result.is_valid:
+    # result.normalized_address: "San Martín 123, San Rafael, Mendoza"
+    # result.components: {"street": "San Martín", "number": "123", "city": "San Rafael", "province": "Mendoza"}
+    case.ultimo_domicilio_conyugal = result.normalized_address
+
+# Invalid address outside jurisdiction
+result = self.validator_addr.validate_address(
+    "Calle Falsa 123, Buenos Aires",
+    is_marital_address=True
+)
+# result.is_valid: False
+# result.errors: ["Domicilio conyugal fuera de jurisdicción (San Rafael/Mendoza)."]
+```
+
+---
+
+## 5. Hallucination Detection
+
+**Location:** `backend/src/application/services/hallucination_detection_service.py`
+
+**Purpose:** Detect when the LLM invents information or makes inappropriate claims.
+
+### Detection Strategies
+
+1. **Rule-based patterns** (fast, deterministic)
+2. **LLM-based validation** (semantic, slower)
+
+### Rule-Based Detection
+
+```python
+class HallucinationDetectionService:
+    # Patterns indicating fabricated system access
+    HALLUCINATION_PATTERNS = [
+        r"según mi base de datos",
+        r"en mi sistema",
+        r"tengo acceso a",
+        r"puedo ver que",
+        r"según mis registros",
+        r"he verificado que",
+    ]
+    
+    # Good uncertainty indicators (appropriate for legal advice)
+    UNCERTAINTY_INDICATORS = [
+        "posible", "probable", "podría", "quizás", "tal vez",
+        "en general", "usualmente", "depende", "puede variar"
+    ]
+    
+    # Specific data that shouldn't be invented
+    SPECIFIC_DATA_PATTERNS = [
+        r"\d{7,8}",  # DNI
+        r"\d{2}/\d{2}/\d{4}",  # Dates
+        r"expediente\s+n[úu]mero\s+\d+",  # Case numbers
+        r"juzgado\s+\d+",  # Court numbers
+    ]
+```
+
+### Check Implementation
+
+```python
+async def check_response(
+    self, 
+    response: str, 
+    context: str, 
+    question: str
+) -> HallucinationCheckResult:
+    """Verifies if LLM response contains hallucinations"""
+    flags = []
+    confidence = 1.0
+    
+    # 1. Check for suspicious patterns
+    for pattern in self.compiled_patterns:
+        if pattern.search(response):
+            flags.append("claims_system_access")
+            confidence -= 0.3
+    
+    # 2. Check for invented specific data
+    for pattern in self.data_patterns:
+        matches = pattern.findall(response)
+        for match in matches:
+            # If data appears in context OR question, it's OK
+            if match in context or match in question:
+                continue
+            flags.append(f"invents_specific_data:{match}")
+            confidence -= 0.4
+    
+    # 3. Check for invented URLs
+    url_pattern = re.compile(r"https?://[^\s]+")
+    urls = url_pattern.findall(response)
+    if urls:
+        flags.append("mentions_urls")
+        confidence -= 0.2
+    
+    # 4. Check for unknown proper nouns
+    known_places = ["san rafael", "mendoza", "argentina", "defensoría"]
+    capitalized_words = re.findall(r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b", response)
+    for word in capitalized_words:
+        if word.lower() not in known_places and word not in context:
+            flags.append(f"unknown_proper_noun:{word}")
+            confidence -= 0.1
+    
+    # 5. POSITIVE: Uncertainty indicators (good for legal advice)
+    uncertainty_count = sum(1 for ind in self.UNCERTAINTY_INDICATORS if ind in response.lower())
+    if uncertainty_count > 0:
+        confidence += 0.1  # Bonus for expressing uncertainty
+    
+    # 6. Check for excessive length (over-elaboration)
+    if len(response.split()) > 300:
+        flags.append("excessive_length")
+        confidence -= 0.1
+    
+    # Normalize confidence
+    confidence = max(0.0, min(1.0, confidence))
+    
+    is_valid = confidence >= 0.6 and not any("invents" in f for f in flags)
+    
+    return HallucinationCheckResult(
+        is_valid=is_valid,
+        confidence=confidence,
+        flags=flags,
+        explanation=self._generate_explanation(flags, confidence)
+    )
+```
+
+### LLM-Based Validation (Advanced)
+
+**Uses a specialized LLM (`glm-4.6:cloud`) to validate responses semantically.**
+
+```python
+async def check_with_llm(
+    self,
+    response: str,
+    context: str,
+    question: str
+) -> HallucinationCheckResult:
+    """Semantic validation using specialized LLM"""
+    
+    validation_prompt = f"""Eres un experto en validar consistencia de respuestas de IA.
+
+Analiza si la siguiente RESPUESTA es consistente con el CONTEXTO proporcionado.
+
+CONTEXTO:
+{context}
+
+PREGUNTA DEL USUARIO:
+{question}
+
+RESPUESTA DEL ASISTENTE:
+{response}
+
+Evalúa y responde SOLO con un JSON:
+
+{{
+  "is_consistent": true/false,
+  "invents_data": true/false,
+  "appropriate": true/false,
+  "confidence": 0.0-1.0,
+  "issues": ["lista de problemas"],
+  "explanation": "breve explicación"
+}}
+
+Criterios:
+- Si menciona datos específicos NO presentes en el contexto: invents_data=true
+- Si afirma tener acceso a sistemas/bases de datos: is_consistent=false
+- Si da consejos legales muy específicos sin base: appropriate=false"""
+    
+    try:
+        # Use specialized model for validation
+        llm_response = await self.llm_router.chat(
+            messages=[{"role": "user", "content": validation_prompt}],
+            task_type="hallucination_check"
+        )
+        
+        # Parse JSON response
+        json_text = llm_response.replace("```json", "").replace("```", "").strip()
+        validation_data = json.loads(json_text)
+        
+        # Convert to HallucinationCheckResult
+        flags = []
+        if not validation_data.get("is_consistent"):
+            flags.append("llm_detected_inconsistency")
+        if validation_data.get("invents_data"):
+            flags.append("llm_detected_invented_data")
+        if not validation_data.get("appropriate"):
+            flags.append("llm_detected_inappropriate_advice")
+        
+        confidence = float(validation_data.get("confidence", 0.5))
+        is_valid = confidence >= 0.7 and validation_data.get("is_consistent", False)
+        
+        return HallucinationCheckResult(
+            is_valid=is_valid,
+            confidence=confidence,
+            flags=flags,
+            explanation=f"Validación LLM: {validation_data.get('explanation')}"
+        )
+        
+    except Exception as e:
+        logger.error("llm_validation_error", error=str(e))
+        # Fallback to rule-based validation
+        return await self.check_response(response, context, question)
+```
+
+### Usage in Message Processing
+
+```python
+# backend/src/application/use_cases/process_incoming_message.py
+
+# Only validate LLM-generated responses (not templates)
+if not self._is_template_response:
+    context = await self.memory.build_context_for_llm(case.id, text)
+    hallucination_check = await self.hallucination.check_response(reply, context, text)
+    
+    if not hallucination_check.is_valid:
+        logger.warning(
+            "hallucination_detected",
+            case_id=case.id,
+            confidence=hallucination_check.confidence,
+            flags=hallucination_check.flags
+        )
+        reply = "Disculpá, tuve un problema. ¿Podés reformular tu consulta?"
+```
+
+---
+
+## Data Transfer Objects (DTOs)
+
+**Location:** `backend/src/application/dtos/validation_results.py`
+
+### ResponseValidationResult
+
+```python
+@dataclass
+class ResponseValidationResult:
+    is_valid: bool
+    errors: List[str]
+    flags: List[str] = field(default_factory=list)
+```
+
+### DateValidationResult
+
+```python
+@dataclass
+class DateValidationResult:
+    is_valid: bool
+    errors: List[str]
+    normalized_date: Optional[str] = None
+    age_years: Optional[int] = None
+```
+
+### AddressValidationResult
+
+```python
+@dataclass
+class AddressValidationResult:
+    is_valid: bool
+    errors: List[str]
+    normalized_address: Optional[str] = None
+    components: Optional[Dict[str, str]] = None
+```
+
+### HallucinationCheckResult
+
+```python
+@dataclass
+class HallucinationCheckResult:
+    is_valid: bool
+    confidence: float
+    flags: List[str]
+    explanation: str
+```
+
+---
+
+## Validation Flow Diagram
+
+```
+User Input
+    ↓
+[Safety Layer: Prompt Injection Check]
+    ↓
+[Response Validation: Format, Content]
+    ↓
+[Domain Validation: Date/Address/etc.]
+    ↓
+Stored in Database
+    ↓
+LLM Processing (if needed)
+    ↓
+[Hallucination Detection]
+    ↓
+[Safety Layer: PII Redaction]
+    ↓
+Final Response to User
+```
+
+---
+
+## Key Takeaways
+
+1. **Multi-layer validation:** Input safety → Field validation → Domain rules → Output verification
+2. **Prompt injection protection:** Block malicious attempts to manipulate the assistant
+3. **Legal constraints:** Age 18+, marriage logic, jurisdiction validation
+4. **Hallucination detection:** Prevent LLM from inventing data
+5. **PII protection:** Redact sensitive data from outputs
+6. **Structured DTOs:** Clear validation result types
+7. **Logging:** All validation failures logged for audit
+
+---
+
+## Related Pages
+
+- [Clean Architecture](/concepts/clean-architecture) - Validation layer separation
+- [State Machine](/concepts/state-machine) - Phase-based validation flow
+- [Memory System](/concepts/memory-system) - Context for validation

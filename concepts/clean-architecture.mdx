@@ -1,0 +1,430 @@
+---
+title: Clean Architecture
+description: Layer separation and SOLID principles in the Defensoría Civil platform
+---
+
+# Clean Architecture
+
+The Defensoría Civil platform follows **Clean Architecture** principles to maintain clear separation of concerns, testability, and independence from frameworks and external services.
+
+## Architecture Layers
+
+The codebase is organized into four distinct layers:
+
+```
+backend/src/
+├── core/                  # Domain/Core Layer
+├── application/           # Application Layer
+├── infrastructure/        # Infrastructure Layer
+└── presentation/          # Presentation Layer
+```
+
+### 1. Core/Domain Layer
+
+**Location:** `backend/src/core/`
+
+**Purpose:** Contains enterprise business rules, domain entities, and configuration that are independent of any framework or external concern.
+
+**Example:**
+
+```python
+# backend/src/core/config.py
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    database_url: str
+    redis_url: str
+    openai_api_key: str
+    # Pure domain configuration
+    # No framework dependencies
+```
+
+**Key Characteristics:**
+- No dependencies on external frameworks
+- Pure business logic
+- Domain entities and value objects
+- Framework-agnostic
+
+---
+
+### 2. Application Layer
+
+**Location:** `backend/src/application/`
+
+**Purpose:** Contains application-specific business rules. Orchestrates the flow of data between the domain and infrastructure layers.
+
+**Structure:**
+```
+application/
+├── dtos/                  # Data Transfer Objects
+├── interfaces/            # Abstract interfaces (ports)
+├── services/              # Domain services
+└── use_cases/             # Application use cases
+```
+
+**Example - Use Case:**
+
+```python
+# backend/src/application/use_cases/process_incoming_message.py
+from dataclasses import dataclass
+from sqlalchemy.orm import Session
+
+@dataclass
+class IncomingMessageRequest:
+    """DTO for incoming message"""
+    phone: str
+    text: str
+    media_id: Optional[str] = None
+    mime_type: Optional[str] = None
+
+@dataclass
+class MessageResponse:
+    """DTO for assistant response"""
+    text: str
+    should_send: bool = True
+    buttons: Optional[List[Dict[str, str]]] = None
+
+class ProcessIncomingMessageUseCase:
+    """
+    Use case: Process incoming WhatsApp message
+    Orchestrates validation, memory, LLM, and state machine
+    """
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self.cases = CaseRepository(db)
+        self.messages = MessageRepository(db)
+        self.memory = MemoryService(db, self.llm)
+        self.hallucination = HallucinationDetectionService()
+        self.safety = SafetyLayer()
+    
+    async def execute(self, request: IncomingMessageRequest) -> MessageResponse:
+        # Orchestration logic
+        case = self.cases.get_or_create_by_phone(request.phone)
+        self.messages.add_message(case.id, "user", request.text)
+        
+        reply = await self._handle_phase(case, request.text)
+        
+        return MessageResponse(text=reply)
+```
+
+**Example - Interface (Port):**
+
+```python
+# backend/src/application/interfaces/validation/address_validation_service.py
+from abc import ABC, abstractmethod
+
+class AddressValidationService(ABC):
+    """Abstract interface for address validation"""
+    
+    @abstractmethod
+    def validate_address(
+        self, 
+        address_text: str, 
+        is_marital_address: bool = False
+    ) -> AddressValidationResult:
+        pass
+```
+
+---
+
+### 3. Infrastructure Layer
+
+**Location:** `backend/src/infrastructure/`
+
+**Purpose:** Implements the interfaces defined in the application layer. Contains all external concerns like databases, APIs, file systems.
+
+**Structure:**
+```
+infrastructure/
+├── ai/                    # LLM clients (OpenRouter, Anthropic)
+├── document/              # Document generation
+├── messaging/             # WhatsApp integration (WAHA)
+├── ocr/                   # OCR services
+├── persistence/           # Database (SQLAlchemy, pgvector)
+├── services/              # Service implementations
+├── tasks/                 # Background jobs (Celery)
+├── utils/                 # Utilities
+└── validation/            # Validation implementations
+```
+
+**Example - Adapter Implementation:**
+
+```python
+# backend/src/infrastructure/validation/address_validation_service_impl.py
+import re
+from application.interfaces.validation.address_validation_service import AddressValidationService
+from application.dtos.validation_results import AddressValidationResult
+
+ALLOWED_JURIS = ["San Rafael", "Mendoza"]
+
+class SimpleAddressValidationService(AddressValidationService):
+    """Concrete implementation of address validation"""
+    
+    STREET_REGEX = re.compile(
+        r"(?P<street>[A-Za-zÀ-ÿ'.\s]+)\s+(?P<number>\d+[A-Za-z0-9/-]*)", 
+        re.UNICODE
+    )
+    
+    def validate_address(
+        self, 
+        address_text: str, 
+        is_marital_address: bool = False
+    ) -> AddressValidationResult:
+        if not address_text or len(address_text.strip()) < 5:
+            return AddressValidationResult(False, ["Dirección vacía"])
+        
+        errors = []
+        m = self.STREET_REGEX.search(address_text)
+        
+        if not m:
+            errors.append("Falta calle y número (ej: 'San Martín 123')")
+        
+        if is_marital_address:
+            # Validate jurisdiction
+            ok = any(j in address_text for j in ALLOWED_JURIS)
+            if not ok:
+                errors.append("Fuera de jurisdicción (San Rafael/Mendoza)")
+        
+        return AddressValidationResult(len(errors) == 0, errors)
+```
+
+**Example - Repository (Data Access):**
+
+```python
+# backend/src/infrastructure/persistence/repositories.py
+from sqlalchemy.orm import Session
+from .models import Case, Message
+
+class CaseRepository:
+    """Repository pattern for Case entity"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_or_create_by_phone(self, phone: str) -> Case:
+        case = self.db.query(Case).filter(Case.phone == phone).first()
+        if not case:
+            case = Case(phone=phone)
+            self.db.add(case)
+            self.db.commit()
+            self.db.refresh(case)
+        return case
+
+    def update(self, case: Case):
+        self.db.add(case)
+        self.db.commit()
+        self.db.refresh(case)
+
+class MessageRepository:
+    """Repository pattern for Message entity"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+
+    def add_message(self, case_id: int, role: str, content: str) -> Message:
+        m = Message(case_id=case_id, role=role, content=content)
+        self.db.add(m)
+        self.db.commit()
+        self.db.refresh(m)
+        return m
+```
+
+---
+
+### 4. Presentation Layer
+
+**Location:** `backend/src/presentation/`
+
+**Purpose:** Handles external communication. API routes, schemas, middleware, and dependencies.
+
+**Structure:**
+```
+presentation/api/
+├── dependencies/          # FastAPI dependencies
+├── middleware/            # Request/response middleware
+├── routes/                # API endpoints
+└── schemas/               # Pydantic request/response models
+```
+
+**Example - API Route:**
+
+```python
+# backend/src/presentation/api/routes/webhook.py (simplified)
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from application.use_cases.process_incoming_message import (
+    ProcessIncomingMessageUseCase,
+    IncomingMessageRequest
+)
+
+router = APIRouter()
+
+@router.post("/whatsapp")
+async def whatsapp_webhook(
+    payload: WhatsAppInbound, 
+    db: Session = Depends(get_db)
+):
+    """Webhook endpoint for WhatsApp messages"""
+    
+    # Extract data from presentation format
+    phone = normalize_whatsapp_phone(payload.messages[0].from_)
+    text = payload.messages[0].body
+    
+    # Delegate to use case
+    use_case = ProcessIncomingMessageUseCase(db)
+    response = await use_case.execute(
+        IncomingMessageRequest(phone=phone, text=text)
+    )
+    
+    # Send response via WhatsApp
+    whatsapp.send_message(phone, response.text)
+    
+    return {"received": True}
+```
+
+---
+
+## Dependency Rule
+
+The fundamental rule of Clean Architecture:
+
+**Dependencies point inward.** Outer layers depend on inner layers, never the reverse.
+
+```
+┌─────────────────────────────────────┐
+│     Presentation Layer              │  ← Depends on Application
+│  (FastAPI routes, schemas)          │
+└─────────────────────────────────────┘
+           ↓ depends on
+┌─────────────────────────────────────┐
+│     Infrastructure Layer            │  ← Depends on Application
+│  (Database, APIs, Services)         │
+└─────────────────────────────────────┘
+           ↓ depends on
+┌─────────────────────────────────────┐
+│     Application Layer               │  ← Depends on Core
+│  (Use Cases, Interfaces)            │
+└─────────────────────────────────────┘
+           ↓ depends on
+┌─────────────────────────────────────┐
+│     Core/Domain Layer               │  ← No dependencies
+│  (Entities, Config)                 │
+└─────────────────────────────────────┘
+```
+
+---
+
+## SOLID Principles in Practice
+
+### Single Responsibility Principle (SRP)
+
+Each class has one reason to change:
+
+- `ProcessIncomingMessageUseCase`: Orchestrates message processing
+- `MemoryService`: Manages conversational memory
+- `HallucinationDetectionService`: Validates LLM responses
+- `CaseRepository`: Data access for cases
+
+### Open/Closed Principle (OCP)
+
+Open for extension, closed for modification:
+
+```python
+# New validation service without modifying existing code
+class EnhancedAddressValidationService(AddressValidationService):
+    def validate_address(self, address_text: str, is_marital_address: bool = False):
+        # New implementation with geocoding API
+        pass
+```
+
+### Liskov Substitution Principle (LSP)
+
+Subtypes are substitutable:
+
+```python
+# Any AddressValidationService implementation can be used
+validator: AddressValidationService = SimpleAddressValidationService()
+# or
+validator: AddressValidationService = EnhancedAddressValidationService()
+```
+
+### Interface Segregation Principle (ISP)
+
+Clients aren't forced to depend on methods they don't use:
+
+```python
+# Separate interfaces for different validation concerns
+class ResponseValidationService(ABC):
+    @abstractmethod
+    def validate_user_response(self, response_text: str, field_name: str) -> ResponseValidationResult:
+        pass
+
+class DateValidationService(ABC):
+    @abstractmethod
+    def validate_birth_date(self, date_str: str) -> DateValidationResult:
+        pass
+```
+
+### Dependency Inversion Principle (DIP)
+
+Depend on abstractions, not concretions:
+
+```python
+# Use case depends on abstract interface
+class ProcessIncomingMessageUseCase:
+    def __init__(self, db: Session):
+        # Depend on interface, not concrete implementation
+        self.validator_addr: AddressValidationService = SimpleAddressValidationService()
+        self.validator_date: DateValidationService = SimpleDateValidationService()
+```
+
+---
+
+## Benefits
+
+### Testability
+
+Easy to mock dependencies and test in isolation:
+
+```python
+class MockAddressValidationService(AddressValidationService):
+    def validate_address(self, address_text: str, is_marital_address: bool = False):
+        return AddressValidationResult(True, [])
+
+# Test use case with mock
+use_case = ProcessIncomingMessageUseCase(db)
+use_case.validator_addr = MockAddressValidationService()
+```
+
+### Maintainability
+
+- Changes to external services (WhatsApp, LLM) don't affect business logic
+- Database changes isolated to infrastructure layer
+- API changes don't affect use cases
+
+### Flexibility
+
+- Swap implementations without changing business logic
+- Easy to add new features following existing patterns
+- Framework-independent core logic
+
+---
+
+## Key Takeaways
+
+1. **Four Layers:** Core, Application, Infrastructure, Presentation
+2. **Dependency Rule:** Dependencies point inward only
+3. **Use Cases:** Orchestrate application flow
+4. **Interfaces (Ports):** Define contracts in application layer
+5. **Adapters:** Implement interfaces in infrastructure layer
+6. **Repository Pattern:** Abstract data access
+7. **SOLID Principles:** Guide design decisions
+
+---
+
+## Related Pages
+
+- [State Machine](/concepts/state-machine) - Phase-based conversation flow
+- [Memory System](/concepts/memory-system) - Contextual memory architecture
+- [Validation](/concepts/validation) - Multi-layer validation system

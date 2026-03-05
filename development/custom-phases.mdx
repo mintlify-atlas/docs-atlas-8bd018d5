@@ -1,0 +1,281 @@
+---
+title: "Custom Phases"
+description: "Learn how to extend the divorce platform's state machine with custom phases"
+---
+
+The platform uses a state machine architecture to guide users through the divorce process. Each phase represents a step in the conversation flow, with specific handlers that validate input and transition to the next state.
+
+## Architecture Overview
+
+Phases are implemented as methods in `ProcessIncomingMessageUseCase` following the pattern `_phase_{phase_name}`. The main handler routes messages to the appropriate phase based on the `case.phase` field stored in the database.
+
+```python
+# Main routing logic in process_incoming_message.py:134
+async def _handle_phase(self, case, text: str) -> str:
+    if case.phase == "inicio":
+        return await self._phase_inicio(case)
+    elif case.phase == "apellido":
+        return await self._phase_apellido(case, text)
+    # ... more phases
+```
+
+## Phase Handler Signature
+
+All phase handlers must follow this signature:
+
+```python
+async def _phase_{name}(self, case, text: str) -> str:
+    """
+    Phase handler for {description}
+    
+    Args:
+        case: The Case model instance with user data
+        text: User's message text (already stored in DB)
+    
+    Returns:
+        str: Assistant's response to send to user
+    """
+    # 1. Validate user input
+    # 2. Update case fields
+    # 3. Transition to next phase
+    # 4. Save changes
+    # 5. Return response message
+```
+
+## State Transitions
+
+Transitions are handled by updating `case.phase` and calling `self.cases.update(case)`:
+
+```python
+async def _phase_apellido(self, case, text: str) -> str:
+    apellido = text.strip().upper()
+    
+    if len(apellido) < 2:
+        # Invalid input - stay in same phase
+        return "Por favor, indicá tu apellido."
+    
+    # Valid input - save and transition
+    case.apellido = apellido
+    case.phase = "nombres"  # Transition to next phase
+    self.cases.update(case)  # Persist to database
+    
+    return "¿Cuáles son tus nombres? (sin apellido)"
+```
+
+**Key points:**
+- Always update `case.phase` before calling `self.cases.update(case)`
+- Return helpful error messages when validation fails (without transitioning)
+- Store validated data in `case` fields before transitioning
+
+## Interactive Elements
+
+Phases can include interactive WhatsApp elements (buttons, lists) by setting `self._pending_interactive`:
+
+### Buttons (max 3)
+
+```python
+async def _phase_inicio(self, case) -> str:
+    case.phase = "tipo_divorcio"
+    self.cases.update(case)
+    
+    body = "¿Cómo desean presentar el divorcio?"
+    self._pending_interactive = {
+        "buttons": [
+            {"text": "Solo yo (Unilateral)"},
+            {"text": "Los dos (Conjunta)"},
+        ],
+        "footer": "Defensoría Civil - San Rafael",
+    }
+    return body
+```
+
+### Lists (for >3 options)
+
+```python
+async def _phase_situacion_laboral(self, case, text: str) -> str:
+    body = "Seleccioná tu situación laboral actual:"
+    self._pending_interactive = {
+        "list_data": {
+            "description": body,
+            "button_text": "Ver opciones",
+            "title": "Situación Laboral",
+            "footer": "Seleccioná la opción que corresponda",
+            "sections": [{
+                "title": "Opciones",
+                "rows": [
+                    {"title": "Desocupado/a", "rowId": "desocupado", "description": "Sin empleo actual"},
+                    {"title": "Relación de dependencia", "rowId": "dependencia", "description": "Empleado/a en blanco"},
+                    {"title": "Autónomo / Monotributo", "rowId": "autonomo", "description": "Trabajo independiente"},
+                ],
+            }],
+        }
+    }
+    return body
+```
+
+## Memory Storage
+
+Phases can store temporary data in session memory or create episodic summaries:
+
+### Session Memory (temporary)
+
+```python
+# Store temporary data for multi-step flows
+await self.memory.store_session_memory(case.id, "hijos_total", 3)
+await self.memory.store_session_memory(case.id, "hijo_actual_nombre", "Juan")
+
+# Retrieve later in another phase
+data = await self.memory.retrieve_session_data(case.id)
+total = int(data.get("hijos_total", 0))
+nombre = data.get("hijo_actual_nombre", "")
+```
+
+### Episodic Memory (persistent summaries)
+
+```python
+# Create a summary when completing major sections
+summary = f"Usuario {case.nombre} completó datos personales para divorcio {case.type}"
+await self.memory.store_episodic_memory(case.id, summary)
+```
+
+## Adding a New Phase: Step-by-Step
+
+Let's add a phase to collect the user's email address:
+
+### 1. Define where it fits in the flow
+
+We'll add it after collecting the user's phone number, before the domicilio phase.
+
+### 2. Add the phase handler
+
+```python
+# In process_incoming_message.py, add to the class
+
+async def _phase_email(self, case, text: str) -> str:
+    """
+    Phase: collect and validate email address
+    """
+    email = text.strip().lower()
+    
+    # Basic email validation
+    import re
+    email_regex = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    
+    if not re.match(email_regex, email):
+        return "El email no es válido. Ingresá un email como: ejemplo@gmail.com"
+    
+    # Save and transition
+    case.email = email
+    case.phase = "domicilio"  # Next phase
+    self.cases.update(case)
+    
+    return f"✅ Email registrado: {email}\n\n¿Cuál es tu domicilio actual?\n\nEjemplo: San Martín 123, San Rafael, Mendoza"
+```
+
+### 3. Add to the phase router
+
+```python
+async def _handle_phase(self, case, text: str) -> str:
+    # ... existing phases ...
+    
+    elif case.phase == "fecha_nacimiento":
+        return await self._phase_fecha_nacimiento(case, text)
+    
+    elif case.phase == "email":  # Add this
+        return await self._phase_email(case, text)
+    
+    elif case.phase == "domicilio":
+        return await self._phase_domicilio(case, text)
+    
+    # ... more phases ...
+```
+
+### 4. Update the previous phase to transition to your new phase
+
+```python
+async def _phase_fecha_nacimiento(self, case, text: str) -> str:
+    result = self.validator_date.validate_birth_date(text)
+    if not result.is_valid:
+        errors = "\n- ".join(result.errors)
+        return f"La fecha no es válida:\n- {errors}\n\nIngresá tu fecha de nacimiento en formato DD/MM/AAAA."
+    
+    from datetime import datetime
+    try:
+        case.fecha_nacimiento = datetime.strptime(result.normalized_date, "%d/%m/%Y").date()
+    except:
+        pass
+    
+    # Changed from "domicilio" to "email"
+    case.phase = "email"  # Transition to new phase
+    self.cases.update(case)
+    return "✅ Perfecto. ¿Cuál es tu email de contacto?"
+```
+
+### 5. Add the field to the Case model
+
+```python
+# In infrastructure/persistence/models.py
+
+class Case(Base):
+    __tablename__ = "cases"
+    
+    # ... existing fields ...
+    email = Column(String, nullable=True)  # Add this field
+```
+
+### 6. Create a database migration
+
+```bash
+cd backend
+alembic revision --autogenerate -m "Add email field to cases"
+alembic upgrade head
+```
+
+### 7. Test the new phase
+
+Test the phase by:
+1. Starting a new conversation
+2. Progressing to the email phase
+3. Testing invalid emails (should show error and stay in phase)
+4. Testing valid email (should save and transition to domicilio)
+
+## Best Practices
+
+<Tip>
+  Always validate user input before transitioning to the next phase. Invalid input should return an error message without changing `case.phase`.
+</Tip>
+
+<Warning>
+  Don't forget to call `self.cases.update(case)` after modifying case fields. Changes are not persisted without this call.
+</Warning>
+
+### Input Validation
+
+- Use validation services for complex validation (dates, addresses)
+- Provide clear error messages with examples
+- Allow flexible input formats (e.g., "SI", "Sí", "si", "1" for yes)
+
+### Response Messages
+
+- Keep messages concise and actionable
+- Use Argentine Spanish ("vos" form)
+- Include examples in validation errors
+- Use emojis sparingly (✅ for success, ⚠️ for warnings)
+
+### State Management
+
+- Always update `case.phase` last, just before returning
+- Use session memory for temporary multi-step flows
+- Create episodic memories at major milestones
+- Update `case.status` when completing major sections
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Validation Rules" icon="check-circle" href="/development/validation-rules">
+    Create custom validators for input validation
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Learn about the overall system architecture
+  </Card>
+</CardGroup>

@@ -1,0 +1,892 @@
+---
+title: 'WhatsApp Conversation Flow'
+description: 'Complete walkthrough of the WhatsApp conversation experience from initial greeting to data collection completion'
+icon: 'message-circle'
+---
+
+## Overview
+
+The WhatsApp chatbot guides citizens through a step-by-step interview to collect all necessary information for a divorce petition. The conversation is structured as a **state machine** with distinct phases, validation rules, and interactive elements.
+
+<Note>
+  The bot uses a conversational tone in Argentine Spanish ("vos") and provides immediate validation feedback at each step.
+</Note>
+
+---
+
+## Complete Conversation Flow
+
+### Phase 1: Greeting and Divorce Type Selection
+
+<Steps>
+  <Step title="inicio → tipo_divorcio">
+    **User initiates conversation** with any greeting ("Hola", "Buenos días", etc.)
+
+    **Bot responds:**
+    ```
+    ¡Hola! 👋 Soy tu asistente de la *Defensoría Civil de San Rafael*.
+
+    Te voy a guiar paso a paso para iniciar tu trámite de divorcio.
+
+    ¿Cómo desean presentarlo?
+    ```
+
+    **Interactive buttons:**
+    - "Solo yo (Unilateral)"
+    - "Los dos (Conjunta)"
+
+    **Validation:**
+    - Accepts button responses or text containing "unilateral", "solo", "conjunta", "ambos", "los dos"
+    - If invalid: Re-presents buttons
+
+    **Next phase:** `apellido`
+  </Step>
+</Steps>
+
+---
+
+### Phase 2: Personal Information (Applicant)
+
+<Steps>
+  <Step title="apellido">
+    **Bot:** "¿Cuál es tu apellido?"
+
+    **Expected input:** Last name (minimum 2 characters)
+
+    **Validation:**
+    - Minimum 2 characters
+    - Stored in uppercase
+
+    **Storage:** `case.apellido = text.strip().upper()`
+
+    **Next phase:** `nombres`
+  </Step>
+
+  <Step title="nombres">
+    **Bot:** "¿Cuáles son tus nombres? (sin apellido)"
+
+    **Expected input:** First and middle names
+
+    **Validation:**
+    - Minimum 2 characters
+    - Capitalized format (title case)
+
+    **Storage:** `case.nombres`, `case.nombre = f"{nombres} {apellido}"`
+
+    **Next phase:** `cuit`
+  </Step>
+
+  <Step title="cuit">
+    **Bot:** "Perfecto, {nombres} {apellido}. ¿Cuál es tu número de CUIT/CUIL? (11 dígitos)"
+
+    **Expected input:** CUIT/CUIL (11 digits, with or without dashes)
+
+    **Format examples:**
+    - `20-12345678-9`
+    - `20123456789`
+    - `2012345678` (10 digits also accepted)
+
+    **Validation:**
+    - Removes spaces and dashes
+    - Must match regex: `^\d{10,11}$`
+    - If invalid: "El CUIT/CUIL ingresado no es válido. Debe tener 11 números..."
+
+    **Data extraction:**
+    - DNI extracted from positions 2-10: `dni = cuit_clean[2:10]`
+    - CUIT formatted: `XX-XXXXXXXX-X`
+
+    **Storage:** `case.cuit`, `case.dni`
+
+    **Response example:**
+    ```
+    ✅ CUIT/CUIL: 20-12345678-9
+    DNI extraído: 12345678
+
+    ¿Cuál es tu fecha de nacimiento? Formato: DD/MM/AAAA
+    ```
+
+    **Next phase:** `fecha_nacimiento`
+  </Step>
+
+  <Step title="fecha_nacimiento">
+    **Bot:** "¿Cuál es tu fecha de nacimiento? Formato: DD/MM/AAAA"
+
+    **Expected input:** Date in DD/MM/YYYY format
+
+    **Validation rules:**
+    - Format: DD/MM/YYYY
+    - Must be at least 18 years old
+    - Date must exist (valid calendar date)
+    - If invalid: Returns specific error messages
+
+    **Example errors:**
+    - "La fecha no es válida:\n- Debe ser mayor de edad (18 años)"
+    - "La fecha no es válida:\n- Formato inválido. Use DD/MM/AAAA"
+
+    **Storage:** `case.fecha_nacimiento` (as Date object)
+
+    **Next phase:** `domicilio`
+  </Step>
+
+  <Step title="domicilio">
+    **Bot:** "✅ Perfecto. ¿Cuál es tu domicilio actual?\n\nEjemplo: San Martín 123, San Rafael, Mendoza"
+
+    **Expected input:** Complete address with street, city, and province
+
+    **Validation requirements:**
+    - Street name and number
+    - City
+    - Province
+
+    **Validation service:** `SimpleAddressValidationService`
+
+    **Example valid inputs:**
+    - "San Martín 123, San Rafael, Mendoza"
+    - "San Martín 123" + "San Rafael Mendoza" (multi-turn)
+    - "Calle 25 de Mayo 456, San Rafael, Mendoza"
+
+    **If incomplete:**
+    ```
+    La dirección está incompleta:
+    - Falta calle y número
+
+    Podés responder de estas formas:
+    - Calle y número (ej: 'San Martín 123')
+    - Ciudad y provincia (ej: 'San Rafael Mendoza')
+    - O todo junto: 'San Martín 123, San Rafael Mendoza'
+    ```
+
+    **Storage:** `case.domicilio`, `case.status = "datos_personales_completos"`
+
+    **Next phase:** `econ_intro`
+  </Step>
+</Steps>
+
+---
+
+### Phase 3: Economic Profile (BLSG Declaration)
+
+<Note>
+  Economic profile is collected to evaluate eligibility for "Beneficio de Litigar Sin Gastos" (BLSG) - legal aid for those who cannot afford court fees.
+</Note>
+
+<Steps>
+  <Step title="econ_intro / econ_situacion">
+    **Bot message:**
+    ```
+    Antes de seguir, vamos a registrar algunos datos económicos para evaluar el
+    *Beneficio de Litigar sin Gastos (BLSG)*.
+    Es una declaración jurada y luego un operador la va a revisar con tu documentación.
+    ```
+
+    **Interactive list menu:**
+    - Title: "Situación Laboral"
+    - Button: "Ver opciones"
+
+    **Options:**
+    1. "Desocupado/a" - Sin empleo actual
+    2. "Relación de dependencia" - Empleado/a en blanco
+    3. "Autónomo / Monotributo" - Trabajo independiente
+    4. "Informal / Changas" - Sin registración formal
+    5. "Jubilación / Pensión" - Jubilado/a o pensionado/a
+    6. "Otro" - Otra situación
+
+    **Validation:** Maps text to categories:
+    - "desocupado", "desempleado" → `desocupado`
+    - "dependencia", "empleado" → `dependencia`
+    - "autonomo", "monotributo" → `autonomo`
+    - "informal", "changas" → `informal`
+    - "jubil", "pension" → `jubilado`
+
+    **Storage:** `case.situacion_laboral`
+
+    **Documentation tips added to case:**
+    - `desocupado`: "Certificado Negativo ANSES: https://servicioswww.anses.gob.ar/censite/index.aspx"
+    - `dependencia`: "último recibo de sueldo"
+    - `autonomo`: "constancia/posición AFIP"
+
+    **Next phase:**
+    - If `dependencia`, `autonomo`, `informal`, or `jubilado`: → `econ_ingreso`
+    - If `desocupado` or `otro`: → `econ_vivienda`
+  </Step>
+
+  <Step title="econ_ingreso" icon="dollar-sign">
+    **Bot:** "¿Cuál es tu ingreso mensual neto? Indicá solo el monto en pesos (ej: 250000)."
+
+    **Expected input:** Numeric amount (accepts "k" notation)
+
+    **Validation:**
+    - Extracts numbers from text
+    - Accepts: "250000", "250.000", "250k"
+    - Converts "k" to "000"
+
+    **Storage:** `case.ingreso_mensual_neto` (as integer)
+
+    **Next phase:** `econ_vivienda`
+  </Step>
+
+  <Step title="econ_vivienda" icon="home">
+    **Bot:** "¿Tu vivienda es propia, alquilada o cedida/prestada?"
+
+    **Interactive buttons:**
+    - "Propia"
+    - "Alquilada"
+    - "Cedida / Prestada"
+
+    **Validation:** Accepts button text or keywords
+
+    **Storage:** `case.vivienda_tipo`
+
+    **Next phase:**
+    - If "alquilada": → `econ_alquiler`
+    - Otherwise: → `econ_patrimonio_inmuebles`
+  </Step>
+
+  <Step title="econ_alquiler" icon="receipt">
+    **Bot:** "¿Cuánto pagás por mes de alquiler? (monto en pesos)"
+
+    **Expected input:** Numeric amount
+
+    **Validation:** Same as `econ_ingreso`
+
+    **Storage:** `case.alquiler_mensual`
+
+    **Next phase:** `econ_patrimonio_inmuebles`
+  </Step>
+
+  <Step title="econ_patrimonio_inmuebles" icon="building">
+    **Bot:** "¿Tenés inmuebles a tu nombre? Si sí, indicá ciudad/provincia (ej: 'casa en San Rafael, Mendoza'). Podés responder 'no'."
+
+    **Expected input:** Text description or "no"
+
+    **Storage:** `case.patrimonio_inmuebles` (if not "no")
+
+    **Next phase:** `econ_patrimonio_registrables`
+  </Step>
+
+  <Step title="econ_patrimonio_registrables" icon="car">
+    **Bot:** "¿Tenés vehículos u otros bienes registrables? Indicá tipo, año, dominio y modelo (ej: 'auto 2015 ABC123 Ford Fiesta'). Podés responder 'no'."
+
+    **Expected input:** Text description or "no"
+
+    **Storage:** `case.patrimonio_registrables`
+
+    **Next phase:** `econ_cierre`
+  </Step>
+
+  <Step title="econ_cierre" icon="check">
+    **Bot performs eligibility pre-check:**
+
+    **Criteria evaluated:**
+    ```python
+    per_capita = (ingreso - alquiler) / cargas
+    elegible = (
+        per_capita <= 1.5 * SMVM or
+        ingreso <= 2.0 * SMVM or
+        vivienda_tipo == "cedida" or
+        situacion_laboral == "desocupado"
+    )
+    ```
+
+    **Storage:**
+    - `case.econ_elegible_preliminar` (boolean)
+    - `case.econ_razones` (JSON with criteria details)
+
+    **Bot response:**
+    ```
+    Gracias. Registré tu información económica (declaración jurada).
+    Un operador de la Defensoría la va a revisar y, si corresponde, te pedirá la documentación por este chat.
+
+    Ahora necesito información sobre tu cónyuge.
+
+    ¿Cuál es el apellido de tu cónyuge?
+    ```
+
+    **Episodic memory:** Creates summary for long-term context
+
+    **Next phase:** `apellido_conyuge`
+  </Step>
+</Steps>
+
+---
+
+### Phase 4: Spouse Information
+
+<Steps>
+  <Step title="apellido_conyuge">
+    **Bot:** "¿Cuál es el apellido de tu cónyuge?"
+
+    **Validation:** Minimum 2 characters, uppercase
+
+    **Storage:** `case.apellido_conyuge`
+
+    **Next phase:** `nombres_conyuge`
+  </Step>
+
+  <Step title="nombres_conyuge">
+    **Bot:** "¿Cuáles son los nombres de tu cónyuge? (sin apellido)"
+
+    **Validation:** Minimum 2 characters, title case
+
+    **Storage:** `case.nombres_conyuge`, `case.nombre_conyuge`
+
+    **Next phase:** `doc_conyuge`
+  </Step>
+
+  <Step title="doc_conyuge">
+    **Bot:**
+    ```
+    Perfecto, {nombres} {apellido}. Ahora necesito el documento del cónyuge.
+
+    Podés enviar:
+    - Solo DNI (7 u 8 dígitos), o
+    - CUIT/CUIL (11 dígitos, con o sin guiones).
+    ```
+
+    **Validation:**
+    - 11 digits: Treats as CUIT/CUIL, extracts DNI
+    - 7-8 digits: Treats as DNI only
+    - Invalid: "El documento debe ser DNI (7/8 dígitos) o CUIT/CUIL (11 dígitos)"
+
+    **Storage:** `case.dni_conyuge`, `case.cuit_conyuge` (if CUIT provided)
+
+    **Next phase:** `fecha_nacimiento_conyuge`
+  </Step>
+
+  <Step title="fecha_nacimiento_conyuge">
+    **Bot:** "Ahora, ¿podrías indicarme la fecha de nacimiento del cónyuge? (DD/MM/AAAA)"
+
+    **Validation:** Same as applicant's birth date
+
+    **Storage:** `case.fecha_nacimiento_conyuge`
+
+    **Next phase:** `domicilio_conyuge`
+  </Step>
+
+  <Step title="domicilio_conyuge">
+    **Bot:** "Gracias. ¿Cuál es el domicilio actual del cónyuge?\n\nEjemplo: San Martín 123, San Rafael, Mendoza"
+
+    **Validation:** Same address validation as applicant
+
+    **Storage:** `case.domicilio_conyuge`
+
+    **Next phase:** `info_matrimonio`
+  </Step>
+</Steps>
+
+---
+
+### Phase 5: Marriage Information
+
+<Steps>
+  <Step title="info_matrimonio">
+    **Bot:** "Gracias, anoté el domicilio del cónyuge.\n\nAhora, para avanzar con el trámite, necesito saber la fecha y el lugar del casamiento."
+
+    **Expected input:** Natural language with date and location
+
+    **Examples:**
+    - "15-03-2005 en San Rafael"
+    - "Nos casamos el 15/03/2005, San Rafael, Mendoza"
+    - "15/03/2005" (if date only, bot asks for location)
+
+    **Parsing:**
+    - Extracts date with regex: `\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b`
+    - Extracts location after removing common phrases ("nos casamos", "en", "el")
+
+    **Multi-turn capability:**
+    If user provides only date first, bot stores it and asks:
+    ```
+    Ya anoté la fecha {fecha}. ¿En qué ciudad y provincia se casaron?
+    ```
+
+    **Validation:**
+    - Location must be at least 4 characters
+    - Date and location both required before advancing
+
+    **Storage:** `case.fecha_matrimonio`, `case.lugar_matrimonio`
+
+    **Next phase:** `ultimo_domicilio_conyugal`
+  </Step>
+
+  <Step title="ultimo_domicilio_conyugal" icon="map-pin">
+    **Bot:**
+    ```
+    ¡Perfecto! Ya anoté que se casaron el {fecha} en {lugar}.
+
+    Para determinar el juzgado competente necesito el último domicilio conyugal.
+    Indicá dirección completa (calle y número, ciudad y provincia).
+    ```
+
+    **Expected input:** Complete address (marital address)
+
+    **Validation:** Full address validation with marital context
+
+    **Jurisdiction warning:**
+    If address does NOT contain "San Rafael":
+    ```
+    ⚠️ El último domicilio conyugal no parece estar en San Rafael.
+    Podría corresponder otro juzgado competente. Un operador lo revisará.
+    ```
+
+    **Storage:** `case.ultimo_domicilio_conyugal`
+
+    **Next phase:** `hijos`
+  </Step>
+</Steps>
+
+---
+
+### Phase 6: Children Information
+
+<Steps>
+  <Step title="hijos">
+    **Bot:**
+    ```
+    Gracias. Registré el último domicilio conyugal.
+
+    Ahora vamos a registrar a los hijos que corresponda incluir en el convenio.
+
+    Solo se incluyen:
+    (a) menores de 18
+    (b) de 18 a 25 que estudian y no son económicamente independientes
+    (c) de cualquier edad con CUD
+
+    ¿Tienen hijos en común con estas características?
+    ```
+
+    **Interactive buttons:**
+    - "Sí"
+    - "No"
+
+    **Validation:**
+    - "no", "no tenemos", "ninguno" → `tiene_hijos = False`
+    - Otherwise → `tiene_hijos = True`
+
+    **Storage:** `case.tiene_hijos`
+
+    **Next phase:**
+    - If No: → `bienes`
+    - If Yes: → `hijos_cuantos`
+  </Step>
+
+  <Step title="hijos_cuantos">
+    **Bot:** "Perfecto. Solo incluiremos hijos con las características indicadas.\n\n¿Cuántos hijos en común con esas características desean declarar?"
+
+    **Expected input:** Number (extracts first digit sequence)
+
+    **Validation:**
+    - Must contain at least one digit
+    - If 0: Sets `tiene_hijos = False` and skips to `bienes`
+
+    **Storage in session memory:**
+    - `hijos_total`: Total number of children
+    - `hijos_index`: Current index (0)
+
+    **Next phase:** `hijo_nombre`
+  </Step>
+
+  <Step title="hijo_nombre">
+    **Bot:** "Decime el nombre completo del hijo/a {index+1}"
+
+    **Expected input:** Full name (minimum 2 characters)
+
+    **Storage in session memory:** `hijo_actual_nombre`
+
+    **Next phase:** `hijo_fecha`
+  </Step>
+
+  <Step title="hijo_fecha">
+    **Bot:** "¿Cuál es la fecha de nacimiento de {nombre_hijo}? (DD/MM/AAAA)"
+
+    **Expected input:** Date in DD/MM/YYYY format
+
+    **Age calculation:**
+    ```python
+    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    ```
+
+    **Automatic inclusion criteria:**
+    - If age < 18: Automatically included (motivo: "MENOR_18")
+    - If age >= 18: → `hijo_mayor_eval` for additional evaluation
+
+    **Storage format (if < 18):**
+    ```
+    {nombre} - Fecha nac.: {fecha} - Motivo: MENOR_18
+    ```
+    Appended to `case.info_hijos`
+
+    **Next phase:**
+    - If < 18 and more children: → `hijo_nombre` (next child)
+    - If < 18 and last child: → `bienes`
+    - If >= 18: → `hijo_mayor_eval`
+  </Step>
+
+  <Step title="hijo_mayor_eval">
+    **Bot:** "{nombre_hijo} tiene {age} años. ¿En cuál situación se encuentra?"
+
+    **Interactive buttons:**
+    - "Tiene CUD vigente"
+    - "Estudia (18-25)"
+    - "Ninguna aplica"
+
+    **Inclusion logic:**
+    - "CUD": Included (motivo: "DISCAPACIDAD_CUD")
+    - "Estudia" + age 18-25: Included (motivo: "ESTUDIA_18A25_DEP")
+    - "Estudia" + age > 25: Excluded (motivo: "NO_CRITERIO")
+    - "Ninguna": Excluded (motivo: "NO_CRITERIO")
+
+    **Storage format:**
+    ```
+    {nombre} - Edad: {age} - Motivo: {motivo} - Incluido/Excluido
+    ```
+
+    **Next phase:**
+    - If more children: → `hijo_nombre`
+    - If last child: → `bienes`
+  </Step>
+</Steps>
+
+---
+
+### Phase 7: Assets Information
+
+<Steps>
+  <Step title="bienes">
+    **Bot:**
+    ```
+    ✅ Datos de hijos registrados.
+
+    ¿Tienen bienes en común? (casa, auto, cuentas bancarias, deudas, etc.)
+    ```
+
+    **Interactive buttons:**
+    - "Sí"
+    - "No"
+
+    **Footer:** "Si tienen bienes, luego te pediré que los detallés."
+
+    **Validation:**
+    - "no", "no tenemos", "ninguno", "no hay", "nada" → No assets
+    - "si", "sí" → Prompt for details
+    - Any text description → Treats as asset list
+
+    **Storage:** `case.tiene_bienes`, `case.info_bienes`
+
+    **If No assets:**
+    ```
+    ✅ ¡Excelente! Toda la información está completa.
+
+    📋 **Resumen:**
+    - Tipo: Divorcio {type}
+    - Solicitante: {nombre}
+    - Cónyuge: {nombre_conyuge}
+    - Hijos en común: Sí/No
+    - Bienes en común: No
+
+    📝 **Próximos pasos:**
+    1. En las próximas 24-48hs un operador de la Defendería va a revisar tu caso
+    2. Te contactaremos para coordinar la presentación de documentación
+    3. Redactaremos la demanda de divorcio
+
+    ¿Tenés alguna consulta mientras tanto?
+    ```
+
+    **Next phase:** `documentacion`
+  </Step>
+
+  <Step title="bienes_detalle">
+    **Bot:** "Perfecto. Por favor describí los bienes en común que tienen:\n\nEjemplo: _casa en San Rafael, auto Fiat Palio 2015, cuenta bancaria BNA_"
+
+    **Expected input:** Free text description
+
+    **Storage:** `case.info_bienes`
+
+    **Response:** Similar completion message as above, but with "Bienes: Sí - {description}"
+
+    **Status update:** `case.status = "info_completa"`
+
+    **Episodic memory:** Creates final summary
+
+    **Next phase:** `documentacion`
+  </Step>
+</Steps>
+
+---
+
+### Phase 8: Documentation and General Queries
+
+<Steps>
+  <Step title="documentacion">
+    **Bot behavior:** LLM-powered fallback with document handling capability
+
+    **Document requests recognized:**
+    Keywords: "document", "documentacion", "papeles", "enviar", "entregar", "subir", "cargar", "foto"
+
+    **Bot provides upload instructions:**
+    ```
+    Podés enviar la documentación por este chat (WhatsApp).
+    Mandá fotos nítidas donde se lean todos los datos:
+
+    - DNI del solicitante (frente y dorso)
+    - Acta de matrimonio actualizada
+    - [Situation-specific documents based on situacion_laboral]
+
+    Cuando termines, respondé 'LISTO'.
+    ```
+
+    **Situation-specific documents:**
+    - `dependencia`: "Último recibo de sueldo"
+    - `autonomo`: "Constancia/posición AFIP"
+    - `desocupado`: "Certificado Negativo ANSES"
+    - `jubilado`: "Último comprobante de haber jubilación/pensión"
+
+    **When user sends "LISTO":**
+    Bot checks uploaded documents and responds with status:
+    ```
+    [Document] recibido. Queda pendiente:
+    - DNI (dorso)
+    - Acta de matrimonio actualizada
+    ```
+
+    **General questions:**
+    For other queries, bot uses LLM with full context:
+    - Memory-augmented responses
+    - Hallucination detection
+    - Safety layer filtering
+    - Professional tone in Argentine Spanish
+
+    **System prompt guidance:**
+    - Use "vos" conjugation
+    - Be brief (3-4 sentences max)
+    - Don't invent data
+    - Don't repeat already-collected information
+    - For sensitive topics (violence, minors): Suggest in-person consultation
+
+    **Phase persists:** User stays in `documentacion` phase until operator manually advances case
+  </Step>
+</Steps>
+
+---
+
+## Interactive Elements
+
+### Button Messages
+
+**Implementation:** `send_buttons` via WAHA WhatsApp API
+
+**Format:**
+```python
+buttons = [
+    {"text": "Option 1"},
+    {"text": "Option 2"},
+    {"text": "Option 3"}
+]
+```
+
+**Limits:** Maximum 3 buttons per message
+
+**Used in phases:**
+- `tipo_divorcio`: Divorce type selection
+- `econ_vivienda`: Housing type
+- `hijos`: Children yes/no
+- `hijo_mayor_eval`: Adult child inclusion criteria
+- `bienes`: Assets yes/no
+
+### List Messages
+
+**Implementation:** `send_list` via WAHA WhatsApp API
+
+**Format:**
+```python
+list_data = {
+    "description": "Main message body",
+    "button_text": "Ver opciones",
+    "title": "List Title",
+    "footer": "Footer text",
+    "sections": [
+        {
+            "title": "Section Name",
+            "rows": [
+                {
+                    "title": "Option Title",
+                    "rowId": "option_id",
+                    "description": "Option description"
+                }
+            ]
+        }
+    ]
+}
+```
+
+**Used in phases:**
+- `econ_situacion`: Employment status (6 options)
+
+---
+
+## Validation Services
+
+### SimpleDateValidationService
+
+**Validates:** Birth dates
+
+**Rules:**
+- Format: DD/MM/YYYY
+- Age >= 18 years
+- Valid calendar date
+
+**Returns:** `ValidationResult(is_valid, errors, normalized_date)`
+
+### SimpleAddressValidationService
+
+**Validates:** Physical addresses
+
+**Requirements:**
+- Street name and number
+- City
+- Province
+
+**Context-aware:**
+- `is_marital_address=True`: More strict validation for competency determination
+
+**Returns:** `ValidationResult(is_valid, errors, normalized_address)`
+
+### SimpleResponseValidationService
+
+**Validates:** User responses for seriousness
+
+**Detects:**
+- Joke responses
+- Nonsense text
+- Evasive answers
+
+---
+
+## State Persistence
+
+### Database Storage
+
+**Case table:** All collected data persisted immediately
+
+**Messages table:** Complete conversation history
+
+**Memory table:** Contextual memory (immediate, session, episodic, semantic)
+
+### Session Memory
+
+**Used for multi-step processes:**
+- Children iteration: `hijos_total`, `hijos_index`, `hijo_actual_nombre`, `hijo_actual_edad`
+- Temporary data before final storage
+
+**API:** `MemoryService.store_session_memory()`, `retrieve_session_data()`
+
+---
+
+## Error Handling
+
+### Safety Layer
+
+**Input filtering:**
+- Prompt injection detection
+- Malicious content blocking
+
+**Output filtering:**
+- PII redaction
+- Content safety checks
+
+**Response on block:**
+```
+No puedo procesar esa solicitud. Por favor reformulá tu mensaje
+sin instrucciones técnicas hacia el sistema.
+```
+
+### Hallucination Detection
+
+**Only for LLM-generated responses** (not template-based)
+
+**Checks:**
+- Response relevance to user query
+- Consistency with conversation context
+- Detection of fabricated data
+
+**On detection:**
+```
+Disculpá, tuve un problema. ¿Podés reformular tu consulta?
+```
+
+---
+
+## Example Complete Conversation
+
+```
+User: Hola
+Bot: ¡Hola! 👋 Soy tu asistente de la *Defensoría Civil de San Rafael*...
+     [Buttons: Solo yo | Los dos]
+
+User: Solo yo
+Bot: Perfecto, divorcio unilateral. Ahora necesito algunos datos personales.
+     ¿Cuál es tu apellido?
+
+User: Rodríguez
+Bot: ¿Cuáles son tus nombres? (sin apellido)
+
+User: Juan Carlos
+Bot: Perfecto, Juan Carlos Rodríguez. ¿Cuál es tu número de CUIT/CUIL? (11 dígitos)
+
+User: 20-30456789-3
+Bot: ✅ CUIT/CUIL: 20-30456789-3
+     DNI extraído: 30456789
+     ¿Cuál es tu fecha de nacimiento? Formato: DD/MM/AAAA
+
+User: 15/08/1985
+Bot: ✅ Perfecto. ¿Cuál es tu domicilio actual?
+     Ejemplo: San Martín 123, San Rafael, Mendoza
+
+User: Belgrano 456, San Rafael, Mendoza
+Bot: Antes de seguir, vamos a registrar algunos datos económicos...
+     [List: Situación Laboral]
+
+User: Relación de dependencia
+Bot: ¿Cuál es tu ingreso mensual neto? Indicá solo el monto en pesos (ej: 250000).
+
+User: 450000
+Bot: ¿Tu vivienda es propia, alquilada o cedida/prestada?
+     [Buttons: Propia | Alquilada | Cedida]
+
+User: Alquilada
+Bot: ¿Cuánto pagás por mes de alquiler? (monto en pesos)
+
+User: 180000
+Bot: ¿Tenés inmuebles a tu nombre?...
+
+[... conversation continues through all phases ...]
+
+Bot: ✅ ¡Excelente! Toda la información está completa.
+     📋 **Resumen:** ...
+     📝 **Próximos pasos:** ...
+```
+
+---
+
+## Technical Implementation
+
+**Source files:**
+- `backend/src/application/use_cases/process_incoming_message.py`: Main state machine (lines 52-230)
+- `backend/src/application/services/conversation_engine.py`: Legacy simple engine
+- `backend/src/infrastructure/messaging/waha_service_impl.py`: WhatsApp API integration
+
+**Key functions:**
+- `ProcessIncomingMessageUseCase.execute()`: Entry point for each message
+- `_handle_phase()`: Phase routing (lines 134-229)
+- Individual phase handlers: `_phase_*()` methods (lines 231-1069)
+
+**Interactive data structure:**
+```python
+self._pending_interactive = {
+    "buttons": [...],
+    "list_data": {...},
+    "header": "...",
+    "footer": "..."
+}
+```
+
+Returned in `MessageResponse` to webhook for rendering.

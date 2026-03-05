@@ -1,0 +1,565 @@
+---
+title: 'Configuration'
+description: 'Complete guide to environment variables and system configuration'
+---
+
+## Overview
+
+The Defensoría Civil platform is configured through environment variables defined in a `.env` file. This guide covers all available configuration options.
+
+## Quick Setup
+
+For a quick start, copy the example environment file:
+
+```bash
+cp .env.example .env
+```
+
+The minimum required configuration is:
+
+```env
+GEMINI_API_KEY=your_api_key_here
+```
+
+All other settings have sensible defaults for local development.
+
+## Environment Variables Reference
+
+### Application Settings
+
+<ParamField path="APP_ENV" type="string" default="development">
+  Application environment mode.
+  
+  **Options**: `development`, `staging`, `production`
+  
+  ```env
+  APP_ENV=development
+  ```
+</ParamField>
+
+<ParamField path="SECRET_KEY" type="string" default="change_me" required>
+  Secret key for JWT token signing and cryptographic operations.
+  
+  <Warning>
+    **Must be changed in production!** Use a random string with at least 32 characters.
+  </Warning>
+  
+  Generate a secure key:
+  ```bash
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+  
+  Example:
+  ```env
+  SECRET_KEY=super_secret_key_minimum_32_characters_long_for_security
+  ```
+</ParamField>
+
+### Database Configuration
+
+<ParamField path="DATABASE_URL" type="string" required>
+  PostgreSQL connection string with SQLAlchemy format.
+  
+  **Format**: `postgresql+psycopg2://USER:PASSWORD@HOST:PORT/DATABASE`
+  
+  <CodeGroup>
+  ```env Docker
+  DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/def_civil
+  ```
+  
+  ```env Local
+  DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil
+  ```
+  
+  ```env Production
+  DATABASE_URL=postgresql+psycopg2://prod_user:secure_pass@db.example.com:5432/def_civil
+  ```
+  </CodeGroup>
+  
+  <Note>
+    The database **must** have the `vector` extension enabled:
+    ```sql
+    CREATE EXTENSION vector;
+    ```
+  </Note>
+</ParamField>
+
+### Cache and Queue (Redis)
+
+<ParamField path="REDIS_URL" type="string" required>
+  Redis connection string for caching, sessions, and Celery task queue.
+  
+  **Format**: `redis://HOST:PORT/DB`
+  
+  <CodeGroup>
+  ```env Docker
+  REDIS_URL=redis://redis:6379/0
+  ```
+  
+  ```env Local
+  REDIS_URL=redis://localhost:6379/0
+  ```
+  
+  ```env Production with Auth
+  REDIS_URL=redis://:password@redis.example.com:6379/0
+  ```
+  </CodeGroup>
+</ParamField>
+
+### LLM Provider Configuration
+
+The platform supports multiple LLM providers with automatic fallback.
+
+#### Google Gemini (Primary)
+
+<ParamField path="GEMINI_API_KEY" type="string" required>
+  Google Gemini API key for primary LLM operations and vision (OCR).
+  
+  Get your API key at [Google AI Studio](https://makersuite.google.com/app/apikey).
+  
+  ```env
+  GEMINI_API_KEY=AIzaSyC...
+  ```
+  
+  <Warning>
+    This is **required** for the system to function. Without it, legal conversations and document processing will fail.
+  </Warning>
+</ParamField>
+
+#### Ollama Cloud (Primary for Advanced Models)
+
+<ParamField path="OLLAMA_CLOUD_API_KEY" type="string">
+  Ollama Cloud API key for accessing advanced models like DeepSeek, Qwen3, etc.
+  
+  ```env
+  OLLAMA_CLOUD_API_KEY=your_ollama_cloud_key
+  OLLAMA_CLOUD_BASE_URL=https://ollama.com
+  ```
+  
+  <Note>
+    Optional but recommended for production. Provides access to specialized reasoning and vision models.
+  </Note>
+</ParamField>
+
+<ParamField path="OLLAMA_CLOUD_BASE_URL" type="string" default="https://ollama.com">
+  Ollama Cloud API base URL.
+  
+  ```env
+  OLLAMA_CLOUD_BASE_URL=https://ollama.com
+  ```
+</ParamField>
+
+#### Ollama Local (Fallback)
+
+<ParamField path="OLLAMA_BASE_URL" type="string" default="http://ollama:11434">
+  Local Ollama instance URL for fallback LLM operations.
+  
+  <CodeGroup>
+  ```env Docker
+  OLLAMA_BASE_URL=http://ollama:11434
+  ```
+  
+  ```env Local
+  OLLAMA_BASE_URL=http://localhost:11434
+  ```
+  </CodeGroup>
+  
+  <Note>
+    Ollama provides local LLM inference. Useful for development or when cloud APIs are unavailable.
+    
+    Install Ollama: https://ollama.ai
+  </Note>
+</ParamField>
+
+### Model Selection
+
+Configure which models to use for different tasks:
+
+<ParamField path="LLM_CHAT_MODEL" type="string" default="minimax-m2:cloud">
+  Model for conversational chat with users.
+  
+  ```env
+  LLM_CHAT_MODEL=minimax-m2:cloud
+  ```
+  
+  **Recommended options**:
+  - `minimax-m2:cloud` - Ollama Cloud, fast and efficient
+  - `gemini-1.5-flash` - Google Gemini, good balance
+  - `llama3.2:latest` - Local Ollama, offline capable
+</ParamField>
+
+<ParamField path="LLM_REASONING_MODEL" type="string" default="deepseek-v3.1:671b-cloud">
+  Model for complex reasoning and decision-making.
+  
+  ```env
+  LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+  ```
+  
+  **Recommended options**:
+  - `deepseek-v3.1:671b-cloud` - Best reasoning performance
+  - `gemini-1.5-pro` - Strong reasoning capabilities
+</ParamField>
+
+<ParamField path="LLM_VISION_MODEL" type="string" default="qwen3-vl:cloud">
+  Model for vision tasks (OCR, document extraction).
+  
+  ```env
+  LLM_VISION_MODEL=qwen3-vl:cloud
+  ```
+  
+  **Recommended options**:
+  - `qwen3-vl:cloud` - Excellent document understanding
+  - `gemini-1.5-flash` - Google's vision model
+</ParamField>
+
+<ParamField path="LLM_HALLUCINATION_MODEL" type="string" default="glm-4.6:cloud">
+  Model for detecting hallucinations in LLM responses.
+  
+  ```env
+  LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+  ```
+  
+  Ensures >99% accuracy in validating legal information.
+</ParamField>
+
+<ParamField path="LLM_EMBEDDING_MODEL" type="string" default="nomic-embed-text">
+  Model for generating text embeddings for semantic search.
+  
+  ```env
+  LLM_EMBEDDING_MODEL=nomic-embed-text
+  ```
+  
+  **Options**:
+  - `nomic-embed-text` - High quality, 768 dimensions
+  - `text-embedding-004` - Google's embedding model
+</ParamField>
+
+### WhatsApp Integration (WAHA)
+
+WhatsApp HTTP API integration for the chatbot.
+
+<ParamField path="WAHA_BASE_URL" type="string" default="http://waha:3000">
+  WAHA (WhatsApp HTTP API) base URL.
+  
+  <CodeGroup>
+  ```env Docker
+  WAHA_BASE_URL=http://waha:3000
+  ```
+  
+  ```env Local
+  WAHA_BASE_URL=http://localhost:3000
+  ```
+  </CodeGroup>
+  
+  <Note>
+    WAHA is a WhatsApp HTTP API wrapper. Learn more: https://waha.devlike.pro/
+  </Note>
+</ParamField>
+
+<ParamField path="WAHA_API_KEY" type="string" default="changeme">
+  API key for authenticating with WAHA.
+  
+  ```env
+  WAHA_API_KEY=your_secure_waha_api_key
+  ```
+  
+  <Warning>
+    Change this in production to prevent unauthorized access to your WhatsApp integration.
+  </Warning>
+</ParamField>
+
+### Validation and Business Rules
+
+<ParamField path="ALLOWED_JURISDICTIONS" type="string" default="San Rafael,Mendoza">
+  Comma-separated list of allowed legal jurisdictions.
+  
+  ```env
+  ALLOWED_JURISDICTIONS=San Rafael,Mendoza
+  ```
+  
+  Used to validate that divorce cases are within the supported jurisdictions.
+</ParamField>
+
+## Configuration Examples
+
+### Development (Local)
+
+```env
+APP_ENV=development
+SECRET_KEY=dev_secret_key_change_in_production
+
+# Local database
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil
+
+# Local Redis
+REDIS_URL=redis://localhost:6379/0
+
+# WhatsApp (optional for development)
+WAHA_BASE_URL=http://localhost:3000
+WAHA_API_KEY=dev_waha_key
+
+# Ollama Cloud (primary)
+OLLAMA_CLOUD_API_KEY=your_cloud_key
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+
+# Local Ollama (fallback)
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Gemini (critical fallback)
+GEMINI_API_KEY=AIzaSyC...
+
+# Models
+LLM_CHAT_MODEL=minimax-m2:cloud
+LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+LLM_VISION_MODEL=qwen3-vl:cloud
+LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+LLM_EMBEDDING_MODEL=nomic-embed-text
+
+# Validation
+ALLOWED_JURISDICTIONS=San Rafael,Mendoza
+```
+
+### Docker Compose
+
+```env
+APP_ENV=development
+SECRET_KEY=change_me
+
+# Docker service names
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/def_civil
+REDIS_URL=redis://redis:6379/0
+
+# WhatsApp
+WAHA_BASE_URL=http://waha:3000
+WAHA_API_KEY=changeme
+
+# Ollama Cloud
+OLLAMA_CLOUD_API_KEY=
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+
+# Ollama Local
+OLLAMA_BASE_URL=http://ollama:11434
+
+# Gemini
+GEMINI_API_KEY=
+
+# Models
+LLM_CHAT_MODEL=minimax-m2:cloud
+LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+LLM_VISION_MODEL=qwen3-vl:cloud
+LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+LLM_EMBEDDING_MODEL=nomic-embed-text
+
+# Validation
+ALLOWED_JURISDICTIONS=San Rafael,Mendoza
+```
+
+### Production
+
+```env
+APP_ENV=production
+SECRET_KEY=xtremely_secure_random_string_with_at_least_32_chars
+
+# Production database with SSL
+DATABASE_URL=postgresql+psycopg2://prod_user:secure_password@prod-db.example.com:5432/def_civil?sslmode=require
+
+# Production Redis with auth
+REDIS_URL=redis://:redis_password@prod-redis.example.com:6379/0
+
+# WhatsApp production
+WAHA_BASE_URL=https://waha.example.com
+WAHA_API_KEY=production_waha_api_key_super_secure
+
+# Ollama Cloud (primary in production)
+OLLAMA_CLOUD_API_KEY=prod_ollama_cloud_key
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+
+# Gemini (critical fallback)
+GEMINI_API_KEY=AIzaSyC_production_key
+
+# Production models
+LLM_CHAT_MODEL=minimax-m2:cloud
+LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+LLM_VISION_MODEL=qwen3-vl:cloud
+LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+LLM_EMBEDDING_MODEL=nomic-embed-text
+
+# Production jurisdictions
+ALLOWED_JURISDICTIONS=San Rafael,Mendoza,General Alvear,Malargüe
+```
+
+## Security Best Practices
+
+<Warning>
+  **Never commit `.env` files to version control!**
+  
+  The `.env` file is already in `.gitignore`. Always use `.env.example` as a template.
+</Warning>
+
+### Secret Management
+
+1. **Generate Strong Keys**
+   ```bash
+   # SECRET_KEY
+   python -c "import secrets; print(secrets.token_urlsafe(32))"
+   
+   # WAHA_API_KEY
+   python -c "import secrets; print(secrets.token_hex(32))"
+   ```
+
+2. **Use Environment-Specific Secrets**
+   - Different `SECRET_KEY` for dev/staging/prod
+   - Different API keys per environment
+   - Rotate secrets regularly
+
+3. **Production Secret Storage**
+   - Use secret management services (AWS Secrets Manager, HashiCorp Vault)
+   - Never hardcode secrets in docker-compose.yml
+   - Use environment variable injection in CI/CD
+
+### API Key Protection
+
+<AccordionGroup>
+  <Accordion title="Gemini API Key">
+    - Restrict by IP address in Google Cloud Console
+    - Set API quotas to prevent abuse
+    - Monitor usage regularly
+    - Rotate keys every 90 days
+  </Accordion>
+  
+  <Accordion title="WAHA API Key">
+    - Use strong random values (32+ characters)
+    - Enable IP whitelisting if possible
+    - Implement rate limiting
+    - Monitor webhook calls
+  </Accordion>
+  
+  <Accordion title="Database Credentials">
+    - Use strong passwords (16+ characters, mixed case, symbols)
+    - Create application-specific users (don't use `postgres`)
+    - Grant minimal required permissions
+    - Use SSL/TLS for connections
+    - Rotate passwords quarterly
+  </Accordion>
+</AccordionGroup>
+
+## Validation and Testing
+
+### Verify Configuration
+
+Test your configuration:
+
+```bash
+# Health check
+curl http://localhost:8000/health/
+
+# Expected: {"status": "ok"}
+```
+
+### Check Database Connection
+
+```python
+from infrastructure.database.connection import engine
+from sqlalchemy import text
+
+with engine.connect() as conn:
+    result = conn.execute(text("SELECT version();"))
+    print(result.fetchone())
+```
+
+### Check Redis Connection
+
+```bash
+# Using redis-cli
+redis-cli -u redis://localhost:6379/0 ping
+
+# Expected: PONG
+```
+
+### Test LLM Configuration
+
+Use the API to test LLM connectivity:
+
+```bash
+curl -X POST http://localhost:8000/api/test/llm \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Test message"}'
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Environment variables not loading">
+    **Symptoms**: Application uses default values instead of `.env` values
+    
+    **Solutions**:
+    1. Verify `.env` is in the project root (same directory as `docker-compose.yml`)
+    2. Check for syntax errors in `.env` (no spaces around `=`)
+    3. Restart services after changing `.env`:
+       ```bash
+       docker compose down
+       docker compose up
+       ```
+  </Accordion>
+  
+  <Accordion title="Invalid DATABASE_URL">
+    **Symptoms**: `sqlalchemy.exc.ArgumentError` or connection errors
+    
+    **Solutions**:
+    1. Verify the format: `postgresql+psycopg2://user:pass@host:port/db`
+    2. Check if special characters in password are URL-encoded:
+       ```python
+       from urllib.parse import quote_plus
+       password = quote_plus("my!p@ss#word")
+       # Use in DATABASE_URL
+       ```
+    3. Test connection manually:
+       ```bash
+       psql postgresql://user:pass@host:port/db
+       ```
+  </Accordion>
+  
+  <Accordion title="Gemini API errors">
+    **Symptoms**: `401 Unauthorized` or `403 Forbidden`
+    
+    **Solutions**:
+    1. Verify API key is correct (no extra spaces)
+    2. Check API is enabled in Google Cloud Console
+    3. Verify billing is set up
+    4. Check rate limits and quotas
+  </Accordion>
+  
+  <Accordion title="Model not found errors">
+    **Symptoms**: `Model 'xyz' not found`
+    
+    **Solutions**:
+    1. For Ollama models, ensure they're pulled:
+       ```bash
+       ollama pull minimax-m2
+       ollama pull deepseek-v3.1:671b
+       ```
+    
+    2. For cloud models, verify API access
+    3. Check model name spelling in `.env`
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="WhatsApp Bot Setup" icon="message" href="/user-guide/whatsapp-flow">
+    Configure and deploy the WhatsApp chatbot
+  </Card>
+  
+  <Card title="Production Deployment" icon="rocket" href="/deployment/production">
+    Deploy to production with security hardening
+  </Card>
+  
+  <Card title="Monitoring" icon="chart-line" href="/deployment/production">
+    Set up logging, metrics, and alerting
+  </Card>
+  
+  <Card title="Security" icon="shield" href="/deployment/security">
+    Security best practices and hardening guide
+  </Card>
+</CardGroup>

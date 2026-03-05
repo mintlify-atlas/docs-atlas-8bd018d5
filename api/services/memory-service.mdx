@@ -1,0 +1,524 @@
+---
+title: MemoryService
+description: Advanced contextual memory service implementing four memory types for conversation continuity
+---
+
+## Overview
+
+The `MemoryService` class provides a sophisticated multi-tier memory system for maintaining conversation context. It implements four types of memory: immediate (short-term), session (active data), episodic (past conversations), and semantic (legal knowledge).
+
+**Location:** `backend/src/application/services/memory_service.py:11-266`
+
+## Class Definition
+
+```python
+class MemoryService:
+    """
+    Servicio de memoria contextual avanzada
+    Implementa 4 tipos de memoria:
+    - Inmediata: Últimos 10 mensajes
+    - Sesión: Datos de la conversación actual
+    - Episódica: Historial de conversaciones pasadas
+    - Semántica: Conocimiento legal estructurado
+    """
+    
+    def __init__(self, db: Session, llm: Optional[LLMRouter] = None):
+        self.db = db
+        self.memory_repo = MemoryRepository(db)
+        self.llm = llm or LLMRouter()
+```
+
+## Memory Types
+
+### 1. Immediate Memory (Short-term)
+
+Stores the last 10 messages for maintaining immediate conversation context.
+
+**Use case:** Understanding recent exchanges, tracking current topic
+
+### 2. Session Memory (Active state)
+
+Stores structured data about the current conversation session as JSON key-value pairs.
+
+**Use case:** User preferences, temporary flags, case-specific metadata
+
+### 3. Episodic Memory (Long-term conversations)
+
+Stores summarized past conversations with vector embeddings for semantic search.
+
+**Use case:** Recalling previous interactions, user history, past issues
+
+### 4. Semantic Memory (Knowledge base)
+
+Stores legal knowledge and procedural information with vector embeddings.
+
+**Use case:** RAG (Retrieval-Augmented Generation), legal guidance, FAQs
+
+## Methods
+
+### Store Methods
+
+#### store_immediate_memory()
+
+Stores a message in immediate memory with automatic pruning.
+
+```python
+async def store_immediate_memory(self, case_id: int, content: str)
+```
+
+**Parameters:**
+- `case_id` (int): Case identifier
+- `content` (str): Message content to store
+
+**Behavior:**
+- Adds new memory record
+- Automatically deletes oldest records beyond 10 messages
+- No return value
+
+**Implementation:**
+
+```python
+# memory_service.py:26-39
+async def store_immediate_memory(self, case_id: int, content: str):
+    self.memory_repo.add_memory(case_id, "immediate", content)
+    
+    # Mantener solo últimos 10
+    memories = self.db.query(Memory).filter(
+        Memory.case_id == case_id,
+        Memory.kind == "immediate"
+    ).order_by(Memory.created_at.desc()).all()
+    
+    if len(memories) > 10:
+        for mem in memories[10:]:
+            self.db.delete(mem)
+        self.db.commit()
+```
+
+#### store_session_memory()
+
+Stores or updates a session variable as JSON.
+
+```python
+async def store_session_memory(self, case_id: int, key: str, value: Any)
+```
+
+**Parameters:**
+- `case_id` (int): Case identifier
+- `key` (str): Variable name (e.g., "preferred_language", "documents_uploaded")
+- `value` (Any): JSON-serializable value
+
+**Behavior:**
+- Updates existing key if found
+- Creates new record if key doesn't exist
+- Automatically commits to database
+
+**Example:**
+
+```python
+# Store user preference
+await memory.store_session_memory(case_id=123, key="language", value="es")
+
+# Store complex data
+await memory.store_session_memory(
+    case_id=123,
+    key="documents_status",
+    value={"dni": True, "marriage_cert": False}
+)
+```
+
+#### store_episodic_memory()
+
+Stores a conversation summary with vector embeddings for semantic search.
+
+```python
+async def store_episodic_memory(self, case_id: int, summary: str)
+```
+
+**Parameters:**
+- `case_id` (int): Case identifier
+- `summary` (str): Conversation summary text
+
+**Behavior:**
+- Generates embedding vector using LLM
+- Handles nested embeddings (flattens if needed)
+- Logs storage to structlog
+
+**Implementation:**
+
+```python
+# memory_service.py:61-81
+async def store_episodic_memory(self, case_id: int, summary: str):
+    # Generar embedding
+    embeddings = await self.llm.embed([summary])
+    embedding = None
+    if embeddings and embeddings[0]:
+        emb = embeddings[0]
+        # Asegurar vector 1D
+        if isinstance(emb, list) and len(emb) > 0 and isinstance(emb[0], list):
+            emb = emb[0]
+        embedding = emb
+    
+    mem = Memory(
+        case_id=case_id,
+        kind="episodic",
+        content=summary,
+        embedding=embedding
+    )
+    self.db.add(mem)
+    self.db.commit()
+    logger.info("episodic_memory_stored", case_id=case_id, summary_length=len(summary))
+```
+
+### Retrieve Methods
+
+#### retrieve_immediate_memory()
+
+Retrieves the last 10 messages in chronological order.
+
+```python
+async def retrieve_immediate_memory(self, case_id: int) -> List[str]
+```
+
+**Returns:**
+- `List[str]`: List of message contents, oldest first
+
+**Example:**
+
+```python
+messages = await memory.retrieve_immediate_memory(case_id=123)
+# ["Hola", "¿Qué tipo de divorcio?", "Unilateral", ...]
+```
+
+#### retrieve_session_data()
+
+Retrieves all session variables as a merged dictionary.
+
+```python
+async def retrieve_session_data(self, case_id: int) -> Dict[str, Any]
+```
+
+**Returns:**
+- `Dict[str, Any]`: Merged JSON objects from all session memory records
+
+**Behavior:**
+- Parses all session memory records
+- Merges into single dictionary
+- Silently ignores malformed JSON
+
+**Example:**
+
+```python
+session_data = await memory.retrieve_session_data(case_id=123)
+# {"language": "es", "documents_status": {"dni": True, "marriage_cert": False}}
+```
+
+#### search_episodic_memory()
+
+Performs semantic search on past conversation summaries.
+
+```python
+async def search_episodic_memory(
+    self, 
+    case_id: int, 
+    query: str, 
+    limit: int = 5
+) -> List[Dict[str, Any]]
+```
+
+**Parameters:**
+- `case_id` (int): Case identifier
+- `query` (str): Search query (natural language)
+- `limit` (int): Maximum results to return (default: 5)
+
+**Returns:**
+- `List[Dict[str, Any]]`: Results with keys `id`, `content`, `distance`
+
+**Database Support:**
+- PostgreSQL: Uses pgvector for true semantic search
+- SQLite: Degrades to chronological order (for tests)
+
+**Implementation:**
+
+```python
+# memory_service.py:110-166
+async def search_episodic_memory(self, case_id: int, query: str, limit: int = 5):
+    embeddings = await self.llm.embed([query])
+    if not embeddings or not embeddings[0]:
+        return []
+
+    query_embedding = embeddings[0]
+    if isinstance(query_embedding[0], list):
+        query_embedding = query_embedding[0]
+
+    # SQLite fallback
+    if self.db.bind and self.db.bind.dialect.name != "postgresql":
+        rows = (
+            self.db.query(Memory)
+            .filter(Memory.case_id == case_id, Memory.kind == "episodic")
+            .order_by(Memory.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [{"id": m.id, "content": m.content, "distance": None} for m in rows]
+
+    # PostgreSQL vector search
+    embedding_str = str(query_embedding).replace(' ', '')
+    result = self.db.execute(
+        text("""
+            SELECT id, content,
+                   embedding <-> CAST(:query_embedding AS vector) AS distance
+            FROM memories
+            WHERE case_id = :case_id AND kind = 'episodic'
+            ORDER BY distance
+            LIMIT :limit
+        """),
+        {"query_embedding": embedding_str, "case_id": case_id, "limit": limit}
+    ).fetchall()
+
+    return [{"id": r[0], "content": r[1], "distance": r[2]} for r in result]
+```
+
+#### search_semantic_knowledge()
+
+Searches the legal knowledge base using semantic similarity.
+
+```python
+async def search_semantic_knowledge(
+    self, 
+    query: str, 
+    limit: int = 3
+) -> List[Dict[str, Any]]
+```
+
+**Parameters:**
+- `query` (str): Search query (natural language)
+- `limit` (int): Maximum results (default: 3)
+
+**Returns:**
+- `List[Dict[str, Any]]`: Results with keys `id`, `title`, `content`, `distance`
+
+**Use Case:**
+Retrieve relevant legal articles, procedures, or FAQs for RAG.
+
+**Example:**
+
+```python
+knowledge = await memory.search_semantic_knowledge(
+    query="requisitos para divorcio unilateral",
+    limit=2
+)
+# [
+#   {"id": 5, "title": "Divorcio Unilateral", "content": "...", "distance": 0.23},
+#   {"id": 12, "title": "Requisitos Legales", "content": "...", "distance": 0.34}
+# ]
+```
+
+### Context Building
+
+#### build_context_for_llm()
+
+Builds comprehensive context by combining all memory types.
+
+```python
+async def build_context_for_llm(self, case_id: int, current_question: str) -> str
+```
+
+**Parameters:**
+- `case_id` (int): Case identifier
+- `current_question` (str): Current user query
+
+**Returns:**
+- `str`: Markdown-formatted context document
+
+**Context Structure:**
+
+1. **Conversación reciente** - Last 10 messages
+2. **Datos del caso** - JSON session variables
+3. **Conversaciones anteriores relevantes** - Top 3 episodic memories
+4. **Conocimiento legal aplicable** - Top 2 semantic knowledge articles
+
+**Example Output:**
+
+```markdown
+## Conversación reciente:
+Hola
+¿Qué tipo de divorcio querés iniciar?
+Unilateral
+
+## Datos del caso:
+{
+  "type": "unilateral",
+  "phase": "nombre",
+  "documents_uploaded": false
+}
+
+## Conversaciones anteriores relevantes:
+- Usuario preguntó sobre plazos de divorcio (hace 2 días)
+- Usuario consultó sobre bienes gananciales (hace 1 semana)
+
+## Conocimiento legal aplicable:
+**Divorcio Unilateral en Argentina**
+El divorcio unilateral puede ser solicitado por cualquiera de los cónyuges...
+
+**Plazos y Procedimientos**
+El trámite tiene una duración estimada de 3-6 meses...
+```
+
+**Implementation:**
+
+```python
+# memory_service.py:218-247
+async def build_context_for_llm(self, case_id: int, current_question: str) -> str:
+    context_parts = []
+    
+    # 1. Memoria inmediata
+    immediate = await self.retrieve_immediate_memory(case_id)
+    if immediate:
+        context_parts.append("## Conversación reciente:\n" + "\n".join(immediate))
+    
+    # 2. Datos de sesión
+    session_data = await self.retrieve_session_data(case_id)
+    if session_data:
+        import json
+        context_parts.append(f"## Datos del caso:\n{json.dumps(session_data, indent=2, ensure_ascii=False)}")
+    
+    # 3. Memoria episódica relevante
+    episodic = await self.search_episodic_memory(case_id, current_question, limit=3)
+    if episodic:
+        episodes = "\n".join([f"- {ep['content']}" for ep in episodic])
+        context_parts.append(f"## Conversaciones anteriores relevantes:\n{episodes}")
+    
+    # 4. Conocimiento legal relevante
+    knowledge = await self.search_semantic_knowledge(current_question, limit=2)
+    if knowledge:
+        docs = "\n\n".join([f"**{k['title']}**\n{k['content']}" for k in knowledge])
+        context_parts.append(f"## Conocimiento legal aplicable:\n{docs}")
+    
+    return "\n\n".join(context_parts)
+```
+
+#### summarize_conversation()
+
+Generates a summary of recent messages for episodic storage.
+
+```python
+async def summarize_conversation(self, case_id: int) -> str
+```
+
+**Parameters:**
+- `case_id` (int): Case identifier
+
+**Returns:**
+- `str`: 2-3 sentence summary focusing on key data and progress
+
+**Uses LLM** to generate concise summaries:
+
+```python
+# memory_service.py:249-265
+async def summarize_conversation(self, case_id: int) -> str:
+    immediate = await self.retrieve_immediate_memory(case_id)
+    if not immediate:
+        return ""
+    
+    conversation = "\n".join(immediate)
+    
+    prompt = f"""Resume la siguiente conversación en 2-3 oraciones clave, 
+enfocándote en los datos recopilados y el progreso del trámite:
+
+{conversation}
+
+Resumen:"""
+    
+    summary = await self.llm.chat([{"role": "user", "content": prompt}])
+    return summary.strip()
+```
+
+## Complete Usage Example
+
+```python
+from sqlalchemy.orm import Session
+from application.services.memory_service import MemoryService
+from infrastructure.ai.router import LLMRouter
+
+# Initialize
+db: Session = get_db_session()
+llm = LLMRouter()
+memory = MemoryService(db, llm)
+
+case_id = 123
+
+# Store immediate message
+await memory.store_immediate_memory(case_id, "Usuario: Hola")
+await memory.store_immediate_memory(case_id, "Asistente: ¿Tipo de divorcio?")
+
+# Store session data
+await memory.store_session_memory(case_id, "divorce_type", "unilateral")
+await memory.store_session_memory(case_id, "phase", "nombre")
+
+# Later: summarize and store episodically
+summary = await memory.summarize_conversation(case_id)
+await memory.store_episodic_memory(case_id, summary)
+
+# Build full context for LLM
+user_question = "¿Cuánto demora el trámite?"
+context = await memory.build_context_for_llm(case_id, user_question)
+
+# Use context in LLM request
+response = await llm.chat([
+    {"role": "system", "content": context},
+    {"role": "user", "content": user_question}
+])
+```
+
+## Database Schema Requirements
+
+### memories table
+
+```sql
+CREATE TABLE memories (
+    id SERIAL PRIMARY KEY,
+    case_id INTEGER NOT NULL,
+    kind VARCHAR(20) NOT NULL,  -- 'immediate', 'session', 'episodic'
+    content TEXT NOT NULL,
+    embedding vector(1536),      -- pgvector extension required
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_memories_case_kind ON memories(case_id, kind);
+CREATE INDEX idx_memories_embedding ON memories USING ivfflat (embedding vector_cosine_ops);
+```
+
+### semantic_knowledge table
+
+```sql
+CREATE TABLE semantic_knowledge (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    content TEXT NOT NULL,
+    embedding vector(1536),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_knowledge_embedding ON semantic_knowledge USING ivfflat (embedding vector_cosine_ops);
+```
+
+## Performance Considerations
+
+### Vector Search
+
+- **Embedding dimension**: 1536 (OpenAI ada-002 format)
+- **Index type**: IVFFlat for approximate nearest neighbor
+- **Distance metric**: Cosine similarity (`<->` operator)
+
+### Memory Limits
+
+- **Immediate memory**: Hard cap at 10 messages
+- **Session memory**: No limit, but use sparingly
+- **Episodic memory**: No automatic cleanup (implement archival strategy)
+- **Semantic knowledge**: Static knowledge base (seed via migrations)
+
+## See Also
+
+- [ConversationEngine](/api/services/conversation-engine) - Main conversation orchestrator
+- [LLMRouter](/api/infrastructure/llm-router) - LLM request routing and embeddings
+- [MemoryRepository](/api/repositories/memory-repository) - Low-level memory persistence

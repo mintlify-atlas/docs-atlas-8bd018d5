@@ -1,0 +1,322 @@
+---
+title: Webhooks
+description: WhatsApp webhook integration for receiving and processing incoming messages
+---
+
+The webhook endpoint receives incoming WhatsApp messages from WAHA (WhatsApp HTTP API) and processes them through the conversational AI system.
+
+## WhatsApp Webhook
+
+<Note>
+  This endpoint does not require authentication. It's called by the external WAHA service.
+</Note>
+
+Receive and process incoming WhatsApp messages.
+
+```http
+POST /webhook/whatsapp
+```
+
+**Request Body:**
+
+<ParamField body="instanceId" type="string">
+  WAHA instance ID (optional)
+</ParamField>
+
+<ParamField body="messages" type="array">
+  Array of WhatsApp messages
+  
+  <Expandable title="Message object properties">
+    <ParamField body="id" type="string">
+      Unique message ID from WhatsApp
+    </ParamField>
+    
+    <ParamField body="from" type="string">
+      Sender phone number (format: `5491123456789@c.us` or `5491123456789@lid`)
+    </ParamField>
+    
+    <ParamField body="chatId" type="string">
+      Chat ID (usually same as `from`)
+    </ParamField>
+    
+    <ParamField body="body" type="string">
+      Message text content
+    </ParamField>
+    
+    <ParamField body="type" type="string">
+      Message type: "text", "image", "document", "video", etc.
+    </ParamField>
+    
+    <ParamField body="timestamp" type="string">
+      Message timestamp (ISO 8601 or Unix timestamp)
+    </ParamField>
+    
+    <ParamField body="mediaId" type="string">
+      Media file ID (for images/documents)
+    </ParamField>
+    
+    <ParamField body="mediaUrl" type="string">
+      Media file URL
+    </ParamField>
+    
+    <ParamField body="mimeType" type="string">
+      MIME type of media (e.g., "image/jpeg", "application/pdf")
+    </ParamField>
+    
+    <ParamField body="caption" type="string">
+      Caption text for images/videos
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Alternative Payload Formats:**
+
+WAHA may send payloads in different formats. The webhook handles:
+
+```json
+// Format 1: Standard
+{
+  "messages": [{...}]
+}
+
+// Format 2: Wrapped in "message"
+{
+  "message": {...}
+}
+
+// Format 3: Wrapped in "data"
+{
+  "data": {...}
+}
+
+// Format 4: Wrapped in "payload"
+{
+  "payload": {...}
+}
+```
+
+**Response (200):**
+
+<ResponseField name="received" type="boolean">
+  Always `true` to acknowledge receipt
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Processing status: "processed", "ignored_outbound", "duplicate_ignored", "empty_message", "error"
+</ResponseField>
+
+<ResponseField name="reply" type="string">
+  Bot's reply text (if applicable)
+</ResponseField>
+
+<ResponseField name="sent" type="boolean">
+  Whether a reply was sent to the user
+</ResponseField>
+
+<ResponseField name="message_id" type="string">
+  Original message ID (for duplicates)
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message (if status is "error")
+</ResponseField>
+
+## Processing Flow
+
+When a message is received:
+
+1. **Validation**: Check that payload contains a message
+2. **Outbound Filter**: Ignore messages sent by the bot itself (`fromMe: true`)
+3. **Deduplication**: Check Redis cache to prevent processing duplicates
+4. **Phone Normalization**: Extract phone number from WhatsApp ID
+5. **Media Extraction**: Parse media attachments (images, documents)
+6. **Case Lookup**: Find or create a case for this phone number
+7. **AI Processing**: Pass message to conversational AI agent
+8. **Reply**: Send bot's response back via WhatsApp
+9. **Error Handling**: Send friendly error message on failures
+
+## Example: Text Message
+
+**Request:**
+
+```bash
+curl -X POST http://localhost:8000/webhook/whatsapp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "instanceId": "instance-1",
+    "messages": [{
+      "id": "true_5491123456789@c.us_3A1234567890ABCDEF",
+      "from": "5491123456789@c.us",
+      "chatId": "5491123456789@c.us",
+      "body": "Hola, necesito ayuda con mi divorcio",
+      "type": "text",
+      "timestamp": "1678901234"
+    }]
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "received": true,
+  "status": "processed",
+  "reply": "Hola! Soy el asistente de la Defensoría Civil. Te voy a ayudar con tu trámite de divorcio. ¿Me contás tu situación?",
+  "sent": true
+}
+```
+
+## Example: Image Message
+
+**Request:**
+
+```json
+{
+  "messages": [{
+    "id": "true_5491123456789@c.us_IMAGE123",
+    "from": "5491123456789@c.us",
+    "chatId": "5491123456789@c.us",
+    "type": "image",
+    "caption": "Mi DNI",
+    "mediaId": "abc123def456",
+    "mimeType": "image/jpeg",
+    "timestamp": "1678901234"
+  }]
+}
+```
+
+**Response:**
+
+```json
+{
+  "received": true,
+  "status": "processed",
+  "reply": "Perfecto, recibí tu DNI. Ahora necesito que me envíes el dorso.",
+  "sent": true
+}
+```
+
+## Example: Duplicate Message
+
+**Response:**
+
+```json
+{
+  "received": true,
+  "status": "duplicate_ignored",
+  "message_id": "true_5491123456789@c.us_3A1234567890ABCDEF"
+}
+```
+
+## Example: Outbound Message (Bot Sent)
+
+**Response:**
+
+```json
+{
+  "received": true,
+  "status": "ignored_outbound"
+}
+```
+
+## Deduplication
+
+The webhook implements deduplication using Redis:
+
+- Message IDs are cached for **5 minutes**
+- Duplicate messages within this window are ignored
+- Cache key format: `whatsapp:processed:<message_id>`
+
+This prevents WAHA from triggering duplicate processing when it sends multiple event types (`message.any`, `message`) for the same message.
+
+## Media Handling
+
+When messages contain media:
+
+1. **Media ID Extraction**: Parse `mediaId` from payload or `media.url`
+2. **Media Storage**: Store in case's `dni_image_url`, `dni_back_url`, or `marriage_cert_url` fields
+3. **OCR Processing**: Extract text from images using Google Cloud Vision
+4. **Document Classification**: AI classifies document type (DNI front, DNI back, marriage certificate, etc.)
+
+**Supported Media Types:**
+
+- Images: `image/jpeg`, `image/png`, `image/webp`
+- Documents: `application/pdf`
+
+## Error Handling
+
+When processing fails:
+
+```json
+{
+  "received": true,
+  "status": "error",
+  "error": "Database connection failed"
+}
+```
+
+The system also sends a user-friendly error message to the user:
+
+```
+Disculpá, tuve un problema técnico. Por favor, intentá de nuevo en unos minutos.
+```
+
+## WAHA Configuration
+
+To configure WAHA to send webhooks to this endpoint:
+
+1. Set webhook URL in WAHA dashboard:
+   ```
+   http://your-backend:8000/webhook/whatsapp
+   ```
+
+2. Enable webhook events:
+   - `message.any` (recommended)
+   - Or `message` (if you want more granular control)
+
+3. Set webhook mode to `POST`
+
+## Implementation Reference
+
+See the implementation in:
+- `backend/src/presentation/api/routes/webhook.py` - Webhook endpoint (lines 35-244)
+- `backend/src/application/use_cases/process_incoming_message.py` - Message processing logic
+- `backend/src/presentation/api/schemas/webhook.py` - Request schemas
+
+## Rate Limiting
+
+The webhook endpoint has a higher rate limit than other endpoints:
+
+- **1000 requests per minute** (per IP)
+
+This accommodates high-volume message bursts from WAHA.
+
+## Security Considerations
+
+<Warning>
+  The webhook endpoint is public by design. Consider implementing:
+  - IP whitelisting for WAHA server
+  - HMAC signature verification (if WAHA supports it)
+  - Request logging and monitoring for abuse
+</Warning>
+
+## Testing
+
+Test the webhook locally:
+
+```bash
+# Start the backend
+cd backend
+python -m uvicorn src.presentation.api.main:app --reload
+
+# Send test message
+curl -X POST http://localhost:8000/webhook/whatsapp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [{
+      "from": "5491123456789@c.us",
+      "body": "Hola",
+      "type": "text"
+    }]
+  }'
+```

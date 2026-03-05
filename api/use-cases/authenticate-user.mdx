@@ -1,0 +1,558 @@
+---
+title: 'Authenticate User'
+description: 'Use case for user authentication and JWT token generation'
+icon: 'key'
+---
+
+## Overview
+
+The `AuthenticateUserUseCase` handles user authentication for the divorce platform dashboard. It validates credentials, checks user status, and generates JWT tokens for secure API access.
+
+**Source**: `backend/src/application/use_cases/authenticate_user.py`
+
+## Class Structure
+
+### Main Class
+
+```python
+class AuthenticateUserUseCase:
+    """
+    Use Case para autenticar usuarios y generar tokens JWT.
+    
+    Flujo:
+    1. Buscar usuario por username
+    2. Verificar password con bcrypt
+    3. Validar que usuario esté activo
+    4. Generar JWT con datos del usuario (username, role)
+    5. Retornar token y datos del usuario
+    """
+```
+
+Defined at: `authenticate_user.py:34-44`
+
+### Dependencies
+
+```python
+def __init__(self, db: Session):
+    self.users = UserRepository(db)
+    self.secret_key = settings.secret_key
+    self.algorithm = "HS256"
+    self.access_token_expire_minutes = 60 * 24  # 24 horas
+```
+
+Defined at: `authenticate_user.py:46-50`
+
+**Dependencies:**
+- `UserRepository`: Database access for user records
+- `settings.secret_key`: JWT signing key from environment config
+- Token expiration: 24 hours by default
+
+## Data Transfer Objects (DTOs)
+
+### LoginRequest
+
+Input DTO with user credentials:
+
+```python
+@dataclass
+class LoginRequest:
+    """Request de login con credenciales"""
+    username: str
+    password: str
+```
+
+Defined at: `authenticate_user.py:20-23`
+
+**Fields:**
+- `username`: User's username (string)
+- `password`: Plain text password (will be verified against hashed version)
+
+### LoginResponse
+
+Output DTO with authentication token and user data:
+
+```python
+@dataclass
+class LoginResponse:
+    """Response exitoso de login con token"""
+    access_token: str
+    token_type: str
+    user: dict
+```
+
+Defined at: `authenticate_user.py:26-31`
+
+**Fields:**
+- `access_token`: JWT token for API authentication
+- `token_type`: Always `"bearer"` for JWT tokens
+- `user`: Dictionary with user information (id, username, email, full_name, role)
+
+## Authentication Flow
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant UseCase as AuthenticateUserUseCase
+    participant UserRepo as UserRepository
+    participant JWT as JWT Library
+    participant DB as Database
+
+    Client->>UseCase: execute(LoginRequest)
+    UseCase->>UserRepo: get_by_username(username)
+    UserRepo->>DB: SELECT * FROM users WHERE username=?
+    DB-->>UserRepo: User record or None
+    UserRepo-->>UseCase: User object
+    
+    alt User not found
+        UseCase-->>Client: HTTPException 401 "Credenciales inválidas"
+    end
+    
+    UseCase->>UserRepo: verify_password(user, password)
+    UserRepo-->>UseCase: Boolean (True/False)
+    
+    alt Invalid password
+        UseCase-->>Client: HTTPException 401 "Credenciales inválidas"
+    end
+    
+    alt User inactive
+        UseCase-->>Client: HTTPException 403 "Usuario desactivado"
+    end
+    
+    UseCase->>JWT: encode(payload, secret, algorithm)
+    JWT-->>UseCase: JWT token string
+    
+    UseCase-->>Client: LoginResponse(token, user_data)
+```
+
+## Main Execution Method
+
+### execute()
+
+The main authentication method:
+
+```python
+def execute(self, request: LoginRequest) -> LoginResponse:
+    """
+    Ejecuta el proceso de autenticación.
+    
+    Args:
+        request: Credenciales de login
+    
+    Returns:
+        LoginResponse con token y datos del usuario
+    
+    Raises:
+        HTTPException: Si las credenciales son inválidas o usuario inactivo
+    """
+    # 1. Buscar usuario
+    user = self.users.get_by_username(request.username)
+    
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciales inválidas"
+        )
+    
+    # 2. Verificar password
+    if not self.users.verify_password(user, request.password):
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciales inválidas"
+        )
+    
+    # 3. Verificar que usuario esté activo
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail="Usuario desactivado. Contacte al administrador."
+        )
+    
+    # 4. Generar JWT
+    access_token = self._create_access_token(
+        data={"sub": user.username, "role": user.role, "user_id": user.id}
+    )
+    
+    # 5. Retornar response
+    return LoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user={
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role
+        }
+    )
+```
+
+Defined at: `authenticate_user.py:52-104`
+
+## JWT Token Generation
+
+### _create_access_token()
+
+Private method for creating JWT tokens:
+
+```python
+def _create_access_token(
+    self, 
+    data: dict, 
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """
+    Crea un JWT token.
+    
+    Args:
+        data: Payload del token
+        expires_delta: Tiempo de expiración personalizado
+    
+    Returns:
+        Token JWT codificado
+    """
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+    
+    to_encode.update({"exp": expire})
+    
+    encoded_jwt = jwt.encode(
+        to_encode, 
+        self.secret_key, 
+        algorithm=self.algorithm
+    )
+    
+    return encoded_jwt
+```
+
+Defined at: `authenticate_user.py:106-136`
+
+### JWT Payload Structure
+
+The generated JWT contains:
+
+```json
+{
+  "sub": "john.doe",
+  "role": "operator",
+  "user_id": 42,
+  "exp": 1709740800
+}
+```
+
+**Fields:**
+- `sub`: Subject (username)
+- `role`: User role (admin, operator, viewer)
+- `user_id`: Database user ID
+- `exp`: Expiration timestamp (Unix epoch)
+
+<Info>
+The token uses **HS256** algorithm (HMAC with SHA-256) for signing. The secret key is loaded from environment configuration.
+</Info>
+
+## Security Features
+
+<CardGroup cols={2}>
+  <Card title="Password Hashing" icon="lock">
+    Passwords are verified against bcrypt hashes, never stored in plain text
+  </Card>
+  <Card title="Active Status Check" icon="user-check">
+    Prevents deactivated users from authenticating even with valid credentials
+  </Card>
+  <Card title="Generic Error Messages" icon="shield-halved">
+    Returns same error message for invalid username or password to prevent enumeration
+  </Card>
+  <Card title="Token Expiration" icon="clock">
+    Tokens expire after 24 hours, requiring re-authentication
+  </Card>
+</CardGroup>
+
+## Error Handling
+
+### HTTP Status Codes
+
+| Code | Condition | Message |
+|------|-----------|----------|
+| 401 | User not found | "Credenciales inválidas" |
+| 401 | Invalid password | "Credenciales inválidas" |
+| 403 | User inactive | "Usuario desactivado. Contacte al administrador." |
+| 200 | Success | LoginResponse with token |
+
+<Warning>
+**Security Note**: The same error message is returned for both "user not found" and "invalid password" to prevent username enumeration attacks.
+</Warning>
+
+## Real Usage Example
+
+### API Endpoint Integration
+
+```python
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from application.use_cases.authenticate_user import (
+    AuthenticateUserUseCase,
+    LoginRequest,
+    LoginResponse
+)
+from infrastructure.persistence.database import get_db
+
+router = APIRouter(prefix="/auth", tags=["authentication"])
+
+@router.post("/login", response_model=LoginResponse)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+) -> LoginResponse:
+    """
+    Authenticate user and return JWT token.
+    
+    This endpoint uses OAuth2 password flow for compatibility with
+    FastAPI's automatic documentation.
+    """
+    # Create use case instance
+    use_case = AuthenticateUserUseCase(db)
+    
+    # Create request DTO
+    request = LoginRequest(
+        username=form_data.username,
+        password=form_data.password
+    )
+    
+    # Execute authentication
+    try:
+        response = use_case.execute(request)
+        return response
+    except HTTPException:
+        # Re-raise HTTP exceptions from use case
+        raise
+    except Exception as e:
+        # Log unexpected errors
+        logger.error("login_failed", error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Error interno del servidor"
+        )
+```
+
+### Example Request/Response
+
+**Request:**
+```http
+POST /auth/login HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+username=john.doe&password=SecurePassword123
+```
+
+**Success Response (200):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJqb2huLmRvZSIsInJvbGUiOiJvcGVyYXRvciIsInVzZXJfaWQiOjQyLCJleHAiOjE3MDk3NDA4MDB9.a3b5c7d9e1f2g3h4i5j6k7l8m9n0o1p2",
+  "token_type": "bearer",
+  "user": {
+    "id": 42,
+    "username": "john.doe",
+    "email": "john.doe@defensoria.gob.ar",
+    "full_name": "John Doe",
+    "role": "operator"
+  }
+}
+```
+
+**Error Response (401):**
+```json
+{
+  "detail": "Credenciales inválidas"
+}
+```
+
+**Error Response (403):**
+```json
+{
+  "detail": "Usuario desactivado. Contacte al administrador."
+}
+```
+
+## Using the Token
+
+### Authorization Header
+
+Once authenticated, clients must include the token in all API requests:
+
+```http
+GET /api/cases HTTP/1.1
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+### Token Validation Example
+
+```python
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
+from core.config import settings
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    """
+    Dependency to validate JWT token and extract user info.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="No se pudo validar las credenciales",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(
+            token, 
+            settings.secret_key, 
+            algorithms=["HS256"]
+        )
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        
+        return {
+            "username": username,
+            "role": payload.get("role"),
+            "user_id": payload.get("user_id")
+        }
+    except JWTError:
+        raise credentials_exception
+
+# Use in protected endpoints:
+@router.get("/cases")
+def list_cases(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # current_user contains decoded token data
+    return {"cases": [...], "user": current_user["username"]}
+```
+
+## User Roles
+
+The platform supports three user roles:
+
+| Role | Permissions | Use Case |
+|------|-------------|----------|
+| `admin` | Full access to all features | System administrators |
+| `operator` | Can manage cases, review documents | Defensoria staff |
+| `viewer` | Read-only access | Auditors, reviewers |
+
+<Note>
+Role-based access control (RBAC) is enforced at the API endpoint level using FastAPI dependencies that check the `role` claim in the JWT token.
+</Note>
+
+## Configuration
+
+### Environment Variables
+
+Required configuration in `.env`:
+
+```bash
+# JWT Secret Key (must be long and random)
+SECRET_KEY=your-super-secret-key-change-this-in-production
+
+# Token expiration (optional, defaults to 1440 minutes = 24 hours)
+ACCESS_TOKEN_EXPIRE_MINUTES=1440
+
+# Algorithm (optional, defaults to HS256)
+JWT_ALGORITHM=HS256
+```
+
+<Warning>
+**Production Security:**
+- Use a cryptographically secure random string for `SECRET_KEY`
+- Never commit the secret key to version control
+- Rotate keys periodically
+- Use environment-specific secrets
+</Warning>
+
+## Testing
+
+### Unit Test Example
+
+```python
+import pytest
+from fastapi import HTTPException
+from application.use_cases.authenticate_user import (
+    AuthenticateUserUseCase,
+    LoginRequest
+)
+
+def test_successful_login(db_session, test_user):
+    """Test successful authentication"""
+    use_case = AuthenticateUserUseCase(db_session)
+    request = LoginRequest(
+        username="testuser",
+        password="testpass123"
+    )
+    
+    response = use_case.execute(request)
+    
+    assert response.access_token is not None
+    assert response.token_type == "bearer"
+    assert response.user["username"] == "testuser"
+    assert response.user["role"] == "operator"
+
+def test_invalid_username(db_session):
+    """Test authentication with non-existent username"""
+    use_case = AuthenticateUserUseCase(db_session)
+    request = LoginRequest(
+        username="nonexistent",
+        password="anypassword"
+    )
+    
+    with pytest.raises(HTTPException) as exc:
+        use_case.execute(request)
+    
+    assert exc.value.status_code == 401
+    assert "Credenciales inválidas" in exc.value.detail
+
+def test_invalid_password(db_session, test_user):
+    """Test authentication with wrong password"""
+    use_case = AuthenticateUserUseCase(db_session)
+    request = LoginRequest(
+        username="testuser",
+        password="wrongpassword"
+    )
+    
+    with pytest.raises(HTTPException) as exc:
+        use_case.execute(request)
+    
+    assert exc.value.status_code == 401
+
+def test_inactive_user(db_session, inactive_user):
+    """Test authentication with inactive user"""
+    use_case = AuthenticateUserUseCase(db_session)
+    request = LoginRequest(
+        username="inactive_user",
+        password="correctpassword"
+    )
+    
+    with pytest.raises(HTTPException) as exc:
+        use_case.execute(request)
+    
+    assert exc.value.status_code == 403
+    assert "desactivado" in exc.value.detail
+```
+
+## Related Use Cases
+
+- [Process Message](/api/use-cases/process-message) - Main WhatsApp message processing
+- [Ingest Document](/api/use-cases/ingest-document) - Legal document ingestion
+
+## See Also
+
+- [User Repository](/api/repositories/user-repository) - Database operations for users
+- [Configuration](/api/core/config) - Application settings
+- [FastAPI Security](https://fastapi.tiangolo.com/tutorial/security/) - Framework security features

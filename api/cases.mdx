@@ -1,0 +1,785 @@
+---
+title: Cases API
+description: Manage divorce cases, retrieve case details, update data, request documents, and generate PDFs
+---
+
+The Cases API provides endpoints for managing divorce cases in the Defensoría Civil system.
+
+<Note>
+  All endpoints require authentication. Include `Authorization: Bearer <token>` in headers.
+</Note>
+
+## List Cases
+
+Retrieve a paginated list of cases with optional filters.
+
+```http
+GET /api/cases/
+```
+
+**Query Parameters:**
+
+<ParamField query="page" type="integer" default="1">
+  Page number (1-indexed)
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="50">
+  Items per page (max: 100)
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filter by status: "active", "completed", "archived"
+</ParamField>
+
+<ParamField query="type" type="string">
+  Filter by divorce type: "unilateral" or "conjunta"
+</ParamField>
+
+<ParamField query="search" type="string">
+  Search by name or DNI (partial match)
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="items" type="array">
+  Array of case objects
+  
+  <Expandable title="Case object properties">
+    <ResponseField name="id" type="integer">
+      Case ID
+    </ResponseField>
+    
+    <ResponseField name="phone" type="string">
+      User's phone number
+    </ResponseField>
+    
+    <ResponseField name="status" type="string">
+      Case status
+    </ResponseField>
+    
+    <ResponseField name="type" type="string">
+      Divorce type: "unilateral" or "conjunta"
+    </ResponseField>
+    
+    <ResponseField name="phase" type="string">
+      Current phase: "recopilacion", "documentacion", "revision", "completo"
+    </ResponseField>
+    
+    <ResponseField name="nombre" type="string">
+      User's name
+    </ResponseField>
+    
+    <ResponseField name="dni" type="string">
+      DNI number
+    </ResponseField>
+    
+    <ResponseField name="fecha_nacimiento" type="string">
+      Birth date (ISO 8601 date)
+    </ResponseField>
+    
+    <ResponseField name="domicilio" type="string">
+      Address
+    </ResponseField>
+    
+    <ResponseField name="fecha_matrimonio" type="string">
+      Marriage date (ISO 8601 date)
+    </ResponseField>
+    
+    <ResponseField name="lugar_matrimonio" type="string">
+      Marriage location
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      Creation timestamp (ISO 8601)
+    </ResponseField>
+    
+    <ResponseField name="updated_at" type="string">
+      Last update timestamp (ISO 8601)
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of cases matching filters
+</ResponseField>
+
+<ResponseField name="page" type="integer">
+  Current page number
+</ResponseField>
+
+<ResponseField name="page_size" type="integer">
+  Items per page
+</ResponseField>
+
+<ResponseField name="pages" type="integer">
+  Total number of pages
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET "http://localhost:8000/api/cases/?page=1&page_size=20&status=active&search=juan" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+{
+  "items": [
+    {
+      "id": 123,
+      "phone": "5491123456789",
+      "status": "active",
+      "type": "unilateral",
+      "phase": "documentacion",
+      "nombre": "Juan Pérez",
+      "dni": "12345678",
+      "fecha_nacimiento": "1985-03-15",
+      "domicilio": "Av. Corrientes 1234, CABA",
+      "fecha_matrimonio": "2010-06-20",
+      "lugar_matrimonio": "Buenos Aires",
+      "created_at": "2026-03-01T10:30:00",
+      "updated_at": "2026-03-05T14:20:00"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20,
+  "pages": 1
+}
+```
+
+## Get Case Details
+
+Retrieve complete information about a specific case, including message history.
+
+```http
+GET /api/cases/{case_id}
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+**Response (200):**
+
+All fields from the list endpoint, plus:
+
+<ResponseField name="ultimo_domicilio_conyugal" type="string">
+  Last marital address
+</ResponseField>
+
+<ResponseField name="situacion_laboral" type="string">
+  Employment status: "Desocupado", "Dependiente", "Autónomo", "Jubilado", etc.
+</ResponseField>
+
+<ResponseField name="ingreso_mensual_neto" type="number">
+  Monthly net income
+</ResponseField>
+
+<ResponseField name="vivienda_tipo" type="string">
+  Housing type: "Propia", "Alquilada", "Familiar", etc.
+</ResponseField>
+
+<ResponseField name="alquiler_mensual" type="number">
+  Monthly rent amount
+</ResponseField>
+
+<ResponseField name="patrimonio_inmuebles" type="boolean">
+  Whether applicant owns real estate
+</ResponseField>
+
+<ResponseField name="patrimonio_registrables" type="boolean">
+  Whether applicant owns registrable assets (vehicles, etc.)
+</ResponseField>
+
+<ResponseField name="econ_elegible_preliminar" type="boolean">
+  Preliminary economic eligibility assessment
+</ResponseField>
+
+<ResponseField name="econ_razones" type="string">
+  Reasoning for economic assessment
+</ResponseField>
+
+<ResponseField name="dni_image_url" type="string">
+  Media ID for DNI front image
+</ResponseField>
+
+<ResponseField name="dni_back_url" type="string">
+  Media ID for DNI back image
+</ResponseField>
+
+<ResponseField name="marriage_cert_url" type="string">
+  Media ID for marriage certificate
+</ResponseField>
+
+<ResponseField name="support_documents" type="array">
+  Array of support documents (income proof, etc.)
+  
+  <Expandable title="Support document properties">
+    <ResponseField name="id" type="integer">
+      Document ID
+    </ResponseField>
+    
+    <ResponseField name="doc_type" type="string">
+      Document type classification
+    </ResponseField>
+    
+    <ResponseField name="mime_type" type="string">
+      MIME type
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      Upload timestamp
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="messages" type="array">
+  Conversation history
+  
+  <Expandable title="Message properties">
+    <ResponseField name="id" type="integer">
+      Message ID
+    </ResponseField>
+    
+    <ResponseField name="role" type="string">
+      Message sender: "user", "assistant", "operator"
+    </ResponseField>
+    
+    <ResponseField name="content" type="string">
+      Message text
+    </ResponseField>
+    
+    <ResponseField name="created_at" type="string">
+      Message timestamp
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/cases/123 \
+  -H "Authorization: Bearer <token>"
+```
+
+**Error Responses:**
+
+- `404` - Case not found
+
+## Update Case
+
+Update specific fields of a case.
+
+```http
+PATCH /api/cases/{case_id}
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+**Request Body:**
+
+Send a JSON object with only the fields you want to update:
+
+<ParamField body="type" type="string">
+  Divorce type: "unilateral" or "conjunta"
+</ParamField>
+
+<ParamField body="phase" type="string">
+  Current phase
+</ParamField>
+
+<ParamField body="apellido" type="string">
+  Last name
+</ParamField>
+
+<ParamField body="nombres" type="string">
+  First name(s)
+</ParamField>
+
+<ParamField body="dni" type="string">
+  DNI number
+</ParamField>
+
+<ParamField body="cuit" type="string">
+  CUIT number
+</ParamField>
+
+<ParamField body="domicilio" type="string">
+  Address
+</ParamField>
+
+<ParamField body="email" type="string">
+  Email address
+</ParamField>
+
+<ParamField body="fecha_nacimiento" type="string">
+  Birth date (YYYY-MM-DD)
+</ParamField>
+
+<ParamField body="apellido_conyuge" type="string">
+  Spouse's last name
+</ParamField>
+
+<ParamField body="nombres_conyuge" type="string">
+  Spouse's first name(s)
+</ParamField>
+
+<ParamField body="dni_conyuge" type="string">
+  Spouse's DNI
+</ParamField>
+
+<ParamField body="domicilio_conyuge" type="string">
+  Spouse's address
+</ParamField>
+
+<ParamField body="fecha_matrimonio" type="string">
+  Marriage date (YYYY-MM-DD)
+</ParamField>
+
+<ParamField body="lugar_matrimonio" type="string">
+  Marriage location
+</ParamField>
+
+<ParamField body="ultimo_domicilio_conyugal" type="string">
+  Last marital address
+</ParamField>
+
+<ParamField body="acta_numero" type="string">
+  Marriage certificate number
+</ParamField>
+
+<ParamField body="acta_libro" type="string">
+  Marriage certificate book
+</ParamField>
+
+<ParamField body="acta_anio" type="string">
+  Marriage certificate year
+</ParamField>
+
+<ParamField body="tiene_hijos" type="boolean">
+  Whether couple has children
+</ParamField>
+
+<ParamField body="tiene_bienes" type="boolean">
+  Whether couple has assets to divide
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="message" type="string">
+  Success message
+</ResponseField>
+
+<ResponseField name="updated_fields" type="array">
+  List of field names that were updated
+</ResponseField>
+
+<ResponseField name="case_id" type="integer">
+  Case ID
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X PATCH http://localhost:8000/api/cases/123 \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phase": "revision",
+    "email": "juan.perez@email.com",
+    "tiene_hijos": false
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "message": "Caso actualizado exitosamente",
+  "updated_fields": ["phase", "email", "tiene_hijos"],
+  "case_id": 123
+}
+```
+
+**Error Responses:**
+
+- `404` - Case not found
+- `422` - Invalid field values
+
+## Request Documents
+
+Send a WhatsApp message to the user requesting required documentation.
+
+```http
+POST /api/cases/{case_id}/request-docs
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+**Request Body (optional):**
+
+<ParamField body="text" type="string">
+  Custom message text (overrides default template)
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="sent" type="boolean">
+  Whether message was sent successfully
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/api/cases/123/request-docs \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+**Response:**
+
+```json
+{
+  "sent": true
+}
+```
+
+**What Happens:**
+
+1. Generates a message listing required documents based on case type and employment status
+2. Sends the message via WhatsApp
+3. Records the message in the conversation history
+4. Updates case phase to "documentacion"
+
+**Default Message Template:**
+
+```
+Hola [nombre]. Un operador de la Defensoría revisó tu solicitud.
+Para avanzar, por favor enviá por este chat fotos legibles de la siguiente documentación:
+- DNI del solicitante (frente y dorso)
+- Acta de matrimonio actualizada
+- [Employment-specific documents]
+
+Asegurate de que las fotos sean nítidas y se lean todos los datos. Cuando termines, respondé 'LISTO'.
+```
+
+**Preview Message:**
+
+To preview the message without sending:
+
+```http
+GET /api/cases/{case_id}/request-docs/preview
+```
+
+**Error Responses:**
+
+- `404` - Case not found
+- `500` - Failed to send message
+
+## Generate PDF Petition
+
+Generate and download a PDF divorce petition for a case.
+
+```http
+GET /api/cases/{case_id}/petition.pdf
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+**Response (200):**
+
+Returns a PDF file (`application/pdf`).
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/cases/123/petition.pdf \
+  -H "Authorization: Bearer <token>" \
+  -o petition_123.pdf
+```
+
+**What's Included:**
+
+- Applicant personal data (name, DNI, address, birth date)
+- Spouse personal data
+- Marriage information (date, location, certificate details)
+- Children information (if applicable)
+- Asset information (if applicable)
+- Legal petition text
+
+**Error Responses:**
+
+- `404` - Case not found
+
+## Download Document Image
+
+Download a document image (DNI front, DNI back, or marriage certificate).
+
+```http
+GET /api/cases/{case_id}/documents/{doc_type}
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+<ParamField path="doc_type" type="string" required>
+  Document type: "dni", "dni_back", or "marriage_cert"
+</ParamField>
+
+**Response (200):**
+
+Returns the image file with appropriate `Content-Type` (`image/jpeg`, `image/png`, or `application/pdf`).
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/cases/123/documents/dni \
+  -H "Authorization: Bearer <token>" \
+  -o dni_frente.jpg
+```
+
+**Error Responses:**
+
+- `400` - Invalid doc_type
+- `404` - Case or document not found
+- `500` - Failed to download from WhatsApp
+
+## Download Support Document
+
+Download a support document (income proof, etc.).
+
+```http
+GET /api/cases/{case_id}/documents/support/{doc_id}
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+<ParamField path="doc_id" type="integer" required>
+  Support document ID
+</ParamField>
+
+**Response (200):**
+
+Returns the document file with appropriate `Content-Type`.
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/cases/123/documents/support/5 \
+  -H "Authorization: Bearer <token>" \
+  -o recibo_sueldo.pdf
+```
+
+**Error Responses:**
+
+- `404` - Case or document not found
+- `500` - Failed to download
+
+## Send Custom Message
+
+Send a custom WhatsApp message to the user.
+
+```http
+POST /api/cases/{case_id}/send-message
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+**Request Body:**
+
+<ParamField body="text" type="string" required>
+  Message text to send
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="sent" type="boolean">
+  Whether message was sent successfully
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/api/cases/123/send-message \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hola Juan, revisé tu documentación y está todo correcto. Voy a iniciar el trámite."
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "sent": true
+}
+```
+
+**What Happens:**
+
+1. Sends the message via WhatsApp
+2. Records the message in conversation history with role "operator"
+3. Updates the case's memory context for AI continuity
+
+**Error Responses:**
+
+- `400` - Missing or empty text
+- `404` - Case not found
+- `500` - Failed to send message
+
+## Validate Case Data
+
+Check which required fields are complete and which are missing.
+
+```http
+GET /api/cases/{case_id}/validate
+```
+
+**Path Parameters:**
+
+<ParamField path="case_id" type="integer" required>
+  Case ID
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="case_id" type="integer">
+  Case ID
+</ResponseField>
+
+<ResponseField name="is_valid" type="boolean">
+  Whether all required fields are complete
+</ResponseField>
+
+<ResponseField name="complete_fields" type="array">
+  List of completed required fields
+</ResponseField>
+
+<ResponseField name="missing_fields" type="array">
+  List of missing required fields
+</ResponseField>
+
+<ResponseField name="optional_fields" type="array">
+  List of completed optional fields
+</ResponseField>
+
+<ResponseField name="completion_percentage" type="integer">
+  Percentage of required fields completed (0-100)
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/cases/123/validate \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+{
+  "case_id": 123,
+  "is_valid": false,
+  "complete_fields": [
+    {"field": "type", "label": "Tipo de divorcio", "value": "unilateral"},
+    {"field": "apellido", "label": "Apellido", "value": "Pérez"},
+    {"field": "nombres", "label": "Nombres", "value": "Juan"}
+  ],
+  "missing_fields": [
+    {"field": "dni", "label": "DNI", "value": null},
+    {"field": "domicilio", "label": "Domicilio", "value": null}
+  ],
+  "optional_fields": [
+    {"field": "email", "label": "Email", "value": "juan@email.com"}
+  ],
+  "completion_percentage": 60
+}
+```
+
+## Case Summary Statistics
+
+Get summary statistics for all cases.
+
+```http
+GET /api/cases/stats/summary
+```
+
+**Response (200):**
+
+<ResponseField name="total_cases" type="integer">
+  Total number of cases
+</ResponseField>
+
+<ResponseField name="recent_cases_7d" type="integer">
+  Cases created in last 7 days
+</ResponseField>
+
+<ResponseField name="by_status" type="object">
+  Case counts by status
+</ResponseField>
+
+<ResponseField name="by_type" type="object">
+  Case counts by type
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/cases/stats/summary \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+{
+  "total_cases": 150,
+  "recent_cases_7d": 12,
+  "by_status": {
+    "active": 80,
+    "completed": 60,
+    "archived": 10
+  },
+  "by_type": {
+    "unilateral": 100,
+    "conjunta": 50
+  }
+}
+```
+
+## Implementation Reference
+
+See the implementation in:
+- `backend/src/presentation/api/routes/cases.py` - All endpoints (lines 17-625)
+- `backend/src/presentation/api/schemas/cases.py` - Response schemas
+- `backend/src/infrastructure/persistence/models.py` - Case model definition

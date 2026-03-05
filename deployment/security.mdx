@@ -1,0 +1,612 @@
+---
+title: Security Configuration
+description: Comprehensive security features and best practices for Defensoría Civil
+---
+
+## Security Overview
+
+The Defensoría Civil platform implements multiple layers of security to protect sensitive legal data and ensure compliance with data protection regulations.
+
+## Authentication & Authorization
+
+### JWT Authentication
+
+The platform uses JWT (JSON Web Tokens) for stateless authentication.
+
+**Implementation** (`presentation/api/dependencies/security.py`):
+
+```python presentation/api/dependencies/security.py
+from jose import jwt, JWTError
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from core.config import settings
+
+security = HTTPBearer()
+SECRET_KEY = settings.secret_key
+ALGORITHM = "HS256"
+
+def get_current_operator(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+    return payload
+```
+
+**Key Features:**
+- HS256 algorithm for token signing
+- HTTPBearer authentication scheme
+- Automatic token validation on protected endpoints
+- Payload extraction for user context
+
+### Protecting Endpoints
+
+```python
+from fastapi import APIRouter, Depends
+from presentation.api.dependencies.security import get_current_operator
+
+router = APIRouter()
+
+@router.get("/api/cases")
+async def list_cases(operator: dict = Depends(get_current_operator)):
+    """Protected endpoint - requires valid JWT"""
+    operator_id = operator.get("sub")
+    # Fetch cases for operator
+    return {"cases": []}
+```
+
+### Token Generation
+
+```python
+from jose import jwt
+from datetime import datetime, timedelta
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(hours=24)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+```
+
+## Rate Limiting
+
+The platform implements sophisticated rate limiting using Redis to prevent abuse and DDoS attacks.
+
+### Rate Limit Middleware
+
+**Implementation** (`presentation/api/middleware/rate_limit.py`):
+
+```python presentation/api/middleware/rate_limit.py
+import time
+import redis
+import structlog
+from fastapi import Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from core.config import settings
+
+logger = structlog.get_logger()
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware de rate limiting usando Redis
+    Implementa límites por IP y por usuario autenticado
+    """
+    
+    def __init__(self, app, redis_client: redis.Redis = None):
+        super().__init__(app)
+        self.redis = redis_client or redis.from_url(settings.redis_url, decode_responses=True)
+        
+        # Límites configurables
+        self.limits = {
+            "webhook": {"requests": 60, "window": 60},  # 60 req/min para webhooks
+            "api": {"requests": 100, "window": 60},     # 100 req/min para API
+            "anonymous": {"requests": 30, "window": 60}, # 30 req/min sin auth
+        }
+    
+    async def dispatch(self, request: Request, call_next):
+        # Bypass webhooks to avoid WAHA rate limiting
+        if request.url.path.startswith("/webhook"):
+            return await call_next(request)
+
+        # Extraer identificador (IP o user)
+        identifier = self._get_identifier(request)
+        
+        # Determinar tipo de límite
+        limit_type = self._get_limit_type(request)
+        limit_config = self.limits.get(limit_type, self.limits["anonymous"])
+        
+        # Verificar límite
+        is_allowed, remaining = self._check_rate_limit(
+            identifier,
+            limit_type,
+            limit_config["requests"],
+            limit_config["window"]
+        )
+        
+        if not is_allowed:
+            logger.warning(
+                "rate_limit_exceeded",
+                identifier=identifier,
+                limit_type=limit_type
+            )
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Too Many Requests",
+                    "message": f"Límite excedido: {limit_config['requests']} solicitudes por {limit_config['window']} segundos",
+                    "retry_after": limit_config["window"]
+                },
+                headers={"Retry-After": str(limit_config["window"])}
+            )
+        
+        # Continuar con la request
+        response = await call_next(request)
+        
+        # Agregar headers informativos
+        response.headers["X-RateLimit-Limit"] = str(limit_config["requests"])
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        response.headers["X-RateLimit-Reset"] = str(int(time.time()) + limit_config["window"])
+        
+        return response
+    
+    def _get_identifier(self, request: Request) -> str:
+        """Obtiene identificador único para rate limiting"""
+        # Preferir user autenticado
+        if hasattr(request.state, "user") and request.state.user:
+            return f"user:{request.state.user.get('sub', 'unknown')}"
+        
+        # Fallback a IP
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            ip = forwarded.split(",")[0].strip()
+        else:
+            ip = request.client.host if request.client else "unknown"
+        
+        return f"ip:{ip}"
+    
+    def _check_rate_limit(self, identifier: str, limit_type: str, max_requests: int, window: int) -> tuple[bool, int]:
+        """
+        Verifica rate limit usando sliding window en Redis
+        Retorna (is_allowed, remaining_requests)
+        """
+        key = f"ratelimit:{limit_type}:{identifier}"
+        now = time.time()
+        window_start = now - window
+        
+        try:
+            # Usar pipeline para atomicidad
+            pipe = self.redis.pipeline()
+            
+            # Remover requests viejas del window
+            pipe.zremrangebyscore(key, 0, window_start)
+            
+            # Contar requests en el window actual
+            pipe.zcard(key)
+            
+            # Agregar request actual
+            pipe.zadd(key, {str(now): now})
+            
+            # Setear TTL
+            pipe.expire(key, window)
+            
+            results = pipe.execute()
+            current_count = results[1]
+            
+            remaining = max(0, max_requests - current_count - 1)
+            is_allowed = current_count < max_requests
+            
+            return is_allowed, remaining
+            
+        except Exception as e:
+            logger.error("rate_limit_redis_error", error=str(e))
+            # En caso de error de Redis, permitir request (fail-open)
+            return True, max_requests
+```
+
+**Key Features:**
+- Sliding window algorithm for accurate rate limiting
+- Per-IP and per-user rate limiting
+- Different limits for webhooks, API, and anonymous users
+- Informative response headers (`X-RateLimit-*`)
+- Fail-open strategy for Redis errors
+- Atomic operations using Redis pipeline
+
+### Rate Limit Configuration
+
+| Type | Requests | Window | Use Case |
+|------|----------|--------|----------|
+| webhook | 60 | 60s | WhatsApp webhooks |
+| api | 100 | 60s | Authenticated API calls |
+| anonymous | 30 | 60s | Unauthenticated requests |
+
+## Security Headers
+
+The platform implements comprehensive security headers to protect against common web vulnerabilities.
+
+### Security Headers Middleware
+
+**Implementation** (`presentation/api/middleware/rate_limit.py`):
+
+```python
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Middleware que agrega headers de seguridad a todas las respuestas.
+    
+    Nota: La documentación automática de FastAPI (Swagger UI/Redoc) carga assets desde CDN
+    y ejecuta scripts inline. Con una CSP estricta (default-src 'self') esos recursos quedan
+    bloqueados, resultando en una página en blanco en /docs. Para evitarlo, relajamos la CSP
+    únicamente en /docs y /redoc, manteniendo una política estricta para el resto de rutas.
+    """
+    
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        
+        # Headers de seguridad estándar
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        
+        path = request.url.path
+        if path.startswith("/docs") or path.startswith("/redoc"):
+            # Permitir assets de Swagger UI desde jsdelivr
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                "img-src 'self' data: https://fastapi.tiangolo.com; "
+                "font-src 'self' data:; "
+                "worker-src 'self' blob:"
+            )
+        else:
+            # Política estricta para API y demás rutas
+            response.headers["Content-Security-Policy"] = "default-src 'self'"
+        
+        return response
+```
+
+**Security Headers Explained:**
+
+| Header | Value | Purpose |
+|--------|-------|----------|
+| `X-Content-Type-Options` | `nosniff` | Prevents MIME-type sniffing |
+| `X-Frame-Options` | `DENY` | Prevents clickjacking attacks |
+| `X-XSS-Protection` | `1; mode=block` | Enables browser XSS filter |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | Forces HTTPS for 1 year |
+| `Content-Security-Policy` | `default-src 'self'` | Restricts resource loading |
+
+<Warning>
+The CSP policy is relaxed for `/docs` and `/redoc` to allow Swagger UI assets. Ensure these endpoints are not exposed in production or require authentication.
+</Warning>
+
+## Prompt Injection Protection
+
+The platform includes a safety layer to detect and block prompt injection attempts in LLM interactions.
+
+### Safety Layer Implementation
+
+**Implementation** (`infrastructure/ai/safety_layer.py`):
+
+```python infrastructure/ai/safety_layer.py
+import re
+import structlog
+from dataclasses import dataclass
+
+logger = structlog.get_logger()
+
+INJECTION_PATTERNS = [
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "you are now",
+    "act as",
+    "SYSTEM:",
+    "system:",
+]
+
+@dataclass
+class SafetyResult:
+    allowed: bool
+    text: str
+    reason: str | None = None
+
+class SafetyLayer:
+    """Safety layer for LLM interactions.
+    
+    Detects prompt injection attempts and filters PII from outputs.
+    """
+
+    def filter_input(self, text: str) -> SafetyResult:
+        """Analiza el prompt de entrada para detectar intentos de prompt injection."""
+        lowered = text.lower()
+        for pattern in INJECTION_PATTERNS:
+            if pattern.lower() in lowered:
+                logger.warning(
+                    "safety_layer_prompt_injection_detected",
+                    pattern=pattern,
+                    text_preview=text[:200],
+                )
+                return SafetyResult(
+                    allowed=False,
+                    text=text,
+                    reason=f"Posible prompt injection detectado: '{pattern}'",
+                )
+        
+        return SafetyResult(allowed=True, text=text, reason=None)
+```
+
+**Protected Patterns:**
+- `ignore previous instructions`
+- `ignore all previous instructions`
+- `you are now`
+- `act as`
+- `SYSTEM:` / `system:`
+
+### PII Redaction
+
+The safety layer also redacts Personally Identifiable Information (PII) from LLM outputs:
+
+```python
+PII_PATTERNS = {
+    "cuit": re.compile(r"\b\d{2}-?\d{7,8}-?\d\b"),
+    "dni": re.compile(r"\b\d{7,8}\b"),
+    "phone": re.compile(r"\+?\d{10,15}"),
+    "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+}
+
+def _redact_pii(self, text: str) -> tuple[str, set[str]]:
+    """Redacta PII básica (DNI, CUIT, teléfono, email) en el texto."""
+    found = set()
+    redacted = text
+    
+    for name, pattern in PII_PATTERNS.items():
+        if pattern.search(redacted):
+            found.add(name)
+            placeholder = f"<{name.upper()}>"
+            redacted = pattern.sub(placeholder, redacted)
+    
+    if found:
+        logger.info(
+            "safety_layer_pii_redacted",
+            types=sorted(found),
+            preview=text[:200],
+        )
+    return redacted, found
+```
+
+**Redacted PII Types:**
+- **CUIT**: Argentine tax ID (XX-XXXXXXXX-X)
+- **DNI**: National ID (7-8 digits)
+- **Phone**: International format (+5492604...)
+- **Email**: Standard email addresses
+
+## Data Encryption
+
+### Database Encryption
+
+For sensitive fields, use database-level encryption:
+
+```python
+from cryptography.fernet import Fernet
+import os
+
+# Generate key (store securely in environment)
+encryption_key = os.getenv("ENCRYPTION_KEY")
+fernet = Fernet(encryption_key)
+
+def encrypt_field(value: str) -> str:
+    return fernet.encrypt(value.encode()).decode()
+
+def decrypt_field(encrypted_value: str) -> str:
+    return fernet.decrypt(encrypted_value.encode()).decode()
+```
+
+### Transport Encryption
+
+Always use HTTPS in production. Configure Nginx for SSL:
+
+```nginx nginx-ssl.conf
+server {
+    listen 443 ssl http2;
+    server_name defensoria.example.com;
+
+    ssl_certificate /etc/nginx/ssl/cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/key.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass http://api:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name defensoria.example.com;
+    return 301 https://$server_name$request_uri;
+}
+```
+
+## Request Logging & Monitoring
+
+Structured logging for security auditing:
+
+```python
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware para logging estructurado de requests"""
+    
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        
+        # Log request
+        logger.info(
+            "request_start",
+            method=request.method,
+            path=request.url.path,
+            client_ip=request.client.host if request.client else "unknown"
+        )
+        
+        try:
+            response = await call_next(request)
+            duration = time.time() - start_time
+            
+            # Log response
+            logger.info(
+                "request_complete",
+                method=request.method,
+                path=request.url.path,
+                status_code=response.status_code,
+                duration_ms=int(duration * 1000)
+            )
+            
+            return response
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            logger.error(
+                "request_error",
+                method=request.method,
+                path=request.url.path,
+                error=str(e),
+                duration_ms=int(duration * 1000)
+            )
+            raise
+```
+
+## Security Best Practices
+
+### Environment Variables
+
+✅ **DO:**
+- Store secrets in environment variables
+- Use `.env` files for local development
+- Use secret management services in production (AWS Secrets Manager, HashiCorp Vault)
+- Rotate secrets regularly
+
+❌ **DON'T:**
+- Commit `.env` files to Git
+- Hardcode secrets in source code
+- Share secrets via chat or email
+- Use default passwords in production
+
+### Database Security
+
+```python
+# Use parameterized queries to prevent SQL injection
+from sqlalchemy import text
+
+# ✅ SAFE
+result = session.execute(
+    text("SELECT * FROM cases WHERE phone = :phone"),
+    {"phone": phone_number}
+)
+
+# ❌ UNSAFE - SQL Injection vulnerable
+result = session.execute(
+    f"SELECT * FROM cases WHERE phone = '{phone_number}'"
+)
+```
+
+### CORS Configuration
+
+Restrict CORS origins in production:
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+if settings.app_env == "production":
+    allowed_origins = ["https://defensoria.example.com"]
+else:
+    allowed_origins = ["http://localhost:3000", "http://localhost:5173"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
+```
+
+### Input Validation
+
+Always validate user input:
+
+```python
+from pydantic import BaseModel, validator
+
+class CaseCreate(BaseModel):
+    phone_number: str
+    full_name: str
+    
+    @validator("phone_number")
+    def validate_phone(cls, v):
+        if not v.startswith("+549"):
+            raise ValueError("Phone must be Argentine format (+549...)")
+        if len(v) < 13:
+            raise ValueError("Invalid phone length")
+        return v
+```
+
+## Security Checklist
+
+- [ ] All endpoints use HTTPS
+- [ ] JWT tokens expire within 24 hours
+- [ ] Rate limiting enabled on all public endpoints
+- [ ] Security headers configured
+- [ ] CORS restricted to known origins
+- [ ] Database uses encrypted connections
+- [ ] Secrets stored in environment variables
+- [ ] PII redaction enabled for LLM outputs
+- [ ] Prompt injection detection active
+- [ ] Request logging configured
+- [ ] Regular security audits scheduled
+- [ ] Dependency vulnerability scanning enabled
+
+## Vulnerability Scanning
+
+### Python Dependencies
+
+```bash
+# Install safety
+pip install safety
+
+# Scan for vulnerabilities
+safety check --json
+```
+
+### Docker Images
+
+```bash
+# Scan with Trivy
+trivy image defensoria-api:latest
+```
+
+## Incident Response
+
+In case of security incident:
+
+1. **Isolate**: Stop affected services immediately
+2. **Assess**: Review logs to determine scope
+3. **Contain**: Rotate compromised credentials
+4. **Notify**: Inform stakeholders and affected users
+5. **Remediate**: Apply security patches
+6. **Document**: Create incident report
+7. **Review**: Update security procedures
+
+## Next Steps
+
+- Review [Production Deployment](/deployment/production) for complete deployment guide
+- Set up [Monitoring](/deployment/production#monitoring) for security alerts
+- Configure [Backup Strategy](/deployment/production#database-backups) for disaster recovery

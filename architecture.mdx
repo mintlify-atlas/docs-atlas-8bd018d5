@@ -1,0 +1,1048 @@
+---
+title: Architecture
+description: Technical architecture of the Defensoría Civil divorce platform - Clean Architecture layers, technology stack, and system design
+---
+
+# System Architecture
+
+The Defensoría Civil divorce platform implements **Clean Architecture** (Robert C. Martin) with strict layer separation, dependency inversion, and interface-based design. This page explores the architectural patterns, technology choices, and system components.
+
+## Clean Architecture Layers
+
+The system follows a four-layer architecture with **dependencies pointing inward** toward the domain:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   Presentation Layer                     │
+│                                                          │
+│  • FastAPI routes (/api/cases, /webhook/whatsapp)       │
+│  • HTTP middleware (rate limiting, security headers)     │
+│  • Request/response DTOs                                 │
+│  • Authentication & authorization                        │
+│                                                          │
+│  Location: backend/src/presentation/                     │
+└──────────────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────────────┐
+│                   Application Layer                      │
+│                                                          │
+│  • Use Cases (ProcessIncomingMessageUseCase)            │
+│  • Services (MemoryService, ConversationEngine)         │
+│  • Interfaces (LLMClient, OCRService, WhatsAppService)  │
+│  • DTOs (IncomingMessageRequest, MessageResponse)       │
+│                                                          │
+│  Location: backend/src/application/                      │
+└──────────────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────────────┐
+│                 Infrastructure Layer                     │
+│                                                          │
+│  • Database implementations (SQLAlchemy repositories)    │
+│  • AI clients (Gemini, Ollama, LLM router)              │
+│  • Messaging (WAHA WhatsApp client)                     │
+│  • OCR services (Gemini Vision implementation)          │
+│  • Task queue (Celery workers)                          │
+│                                                          │
+│  Location: backend/src/infrastructure/                   │
+└──────────────────────────────────────────────────────────┘
+                          ↓
+┌──────────────────────────────────────────────────────────┐
+│                     Domain Layer                         │
+│                                                          │
+│  • Core entities (Case, Message, User)                  │
+│  • Business rules (legal validation logic)              │
+│  • Configuration (settings, environment)                │
+│                                                          │
+│  Location: backend/src/core/                            │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Presentation Layer
+
+The outermost layer handles **HTTP communication and API exposure**.
+
+<Tabs>
+  <Tab title="Main Application">
+    Located in `presentation/api/main.py:19-51`:
+
+    ```python
+    app = FastAPI(
+        title="Defensoría Civil - LLM Intelligence System",
+        version="0.1.0",
+        description="Sistema de asistencia legal automatizada para divorcios",
+        docs_url="/docs",
+        redoc_url="/redoc"
+    )
+
+    # CORS para permitir frontend
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://localhost:5173"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Middlewares de seguridad y logging
+    app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(RateLimitMiddleware)
+
+    @app.on_event("startup")
+    def on_startup():
+        init_db()
+
+    app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+    app.include_router(webhook_router, prefix="/webhook", tags=["webhook"])
+    app.include_router(cases_router, prefix="/api/cases", tags=["cases"])
+    app.include_router(metrics_router, prefix="/api/metrics", tags=["metrics"])
+    app.include_router(users_router, prefix="/api/users", tags=["users"])
+    ```
+
+    **Key Routes**:
+    - `/health/` - Health check endpoint
+    - `/api/auth/` - JWT authentication
+    - `/webhook/whatsapp` - WhatsApp message webhook
+    - `/api/cases/` - Case management (operator dashboard)
+    - `/api/metrics/` - System metrics
+    - `/api/users/` - User management
+  </Tab>
+
+  <Tab title="Middleware Stack">
+    Three security middlewares protect the API:
+
+    **1. RequestLoggingMiddleware**
+    ```python
+    # Logs every request with structlog
+    logger.info(
+        "http_request",
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=duration * 1000
+    )
+    ```
+
+    **2. SecurityHeadersMiddleware**
+    ```python
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    ```
+
+    **3. RateLimitMiddleware**
+    - 30 requests/minute per IP (unauthenticated)
+    - 100 requests/minute per user (authenticated)
+    - Redis-backed distributed rate limiting
+  </Tab>
+
+  <Tab title="WebHook Handler">
+    WhatsApp webhook processes incoming messages:
+
+    ```python
+    @router.post("/whatsapp")
+    async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
+        body = await request.json()
+        
+        for message in body.get("messages", []):
+            phone = message.get("from")
+            text = message.get("body", "")
+            media_id = message.get("mediaId")
+            mime_type = message.get("mimeType")
+            
+            # Invocar caso de uso
+            use_case = ProcessIncomingMessageUseCase(db)
+            req = IncomingMessageRequest(
+                phone=phone,
+                text=text,
+                media_id=media_id,
+                mime_type=mime_type
+            )
+            response = await use_case.execute(req)
+            
+            # Enviar respuesta vía WhatsApp
+            if response.buttons:
+                await whatsapp.send_buttons(phone, response.text, response.buttons)
+            elif response.list_data:
+                await whatsapp.send_list(phone, response.text, response.list_data)
+            else:
+                await whatsapp.send_message(phone, response.text)
+        
+        return {"status": "ok"}
+    ```
+  </Tab>
+</Tabs>
+
+### Application Layer
+
+The **business logic orchestration layer** contains use cases and services.
+
+<CardGroup cols={2}>
+  <Card title="Use Cases" icon="gears">
+    **ProcessIncomingMessageUseCase** is the primary use case:
+
+    Located in `application/use_cases/process_incoming_message.py:52-133`
+
+    ```python
+    class ProcessIncomingMessageUseCase:
+        def __init__(self, db: Session):
+            self.db = db
+            self.cases = CaseRepository(db)
+            self.messages = MessageRepository(db)
+            self.llm = LLMRouter()
+            self.memory = MemoryService(db, self.llm)
+            self.hallucination = HallucinationDetectionService()
+            self.validator_resp = SimpleResponseValidationService()
+            self.validator_addr = SimpleAddressValidationService()
+            self.validator_date = SimpleDateValidationService()
+            self.ocr = MultiProviderOCRService()
+            self.whatsapp = WAHAWhatsAppService()
+            self.safety = SafetyLayer()
+        
+        async def execute(self, request: IncomingMessageRequest):
+            # 1. Obtener o crear caso
+            case = self.cases.get_or_create_by_phone(phone)
+            
+            # 2. Si hay media, procesar imagen
+            if media_id:
+                return await self._handle_media(...)
+            
+            # 3. Almacenar mensaje en DB y memoria
+            self.messages.add_message(case.id, "user", text)
+            await self.memory.store_immediate_memory(case.id, f"Usuario: {text}")
+            
+            # 4. Procesar según fase del caso
+            reply = await self._handle_phase(case, text)
+            
+            # 5. Validar respuesta contra alucinaciones
+            hallucination_check = await self.hallucination.check_response(...)
+            
+            # 6. Almacenar respuesta
+            self.messages.add_message(case.id, "assistant", reply)
+            
+            # 7. Construir y retornar respuesta
+            return MessageResponse(text=reply, buttons=...)
+    ```
+
+    **Other Use Cases**:
+    - `AuthenticateUserUseCase`
+    - `IngestLegalDocumentUseCase`
+  </Card>
+
+  <Card title="Services" icon="server">
+    **Application Services** provide reusable business logic:
+
+    **MemoryService** (`application/services/memory_service.py:11-266`):
+    ```python
+    class MemoryService:
+        def __init__(self, db: Session, llm: LLMRouter):
+            self.db = db
+            self.memory_repo = MemoryRepository(db)
+            self.llm = llm
+        
+        async def store_immediate_memory(case_id, content)
+        async def store_session_memory(case_id, key, value)
+        async def store_episodic_memory(case_id, summary)
+        async def search_episodic_memory(case_id, query)
+        async def search_semantic_knowledge(query)
+        async def build_context_for_llm(case_id, question)
+    ```
+
+    **HallucinationDetectionService** (`application/services/hallucination_detection_service.py:17-100`):
+    ```python
+    class HallucinationDetectionService:
+        HALLUCINATION_PATTERNS = [
+            r"según mi base de datos",
+            r"en mi sistema",
+            # ...
+        ]
+        
+        async def check_response(response, context, question)
+    ```
+
+    **ConversationEngine** (`application/services/conversation_engine.py:17-139`):
+    - Simpler state machine implementation
+    - Used for basic conversational flows
+  </Card>
+</CardGroup>
+
+### Infrastructure Layer
+
+Concrete implementations of interfaces defined in Application layer.
+
+<Tabs>
+  <Tab title="Database">
+    **PostgreSQL with SQLAlchemy ORM**
+
+    Models defined in `infrastructure/persistence/models.py:7-146`:
+
+    ```python
+    class Case(Base):
+        __tablename__ = "cases"
+        id = Column(Integer, primary_key=True)
+        phone = Column(String(32), index=True, nullable=False)
+        status = Column(String(32), default="new")
+        type = Column(String(16))  # unilateral | conjunta
+        phase = Column(String(32), default="inicio")
+        
+        # Personal data
+        nombre = Column(String(120))
+        apellido = Column(String(80))
+        nombres = Column(String(80))
+        dni = Column(String(16))
+        cuit = Column(String(16))
+        fecha_nacimiento = Column(Date)
+        domicilio = Column(Text)
+        
+        # Spouse data
+        nombre_conyuge = Column(String(120))
+        apellido_conyuge = Column(String(80))
+        nombres_conyuge = Column(String(80))
+        dni_conyuge = Column(String(16))
+        cuit_conyuge = Column(String(16))
+        domicilio_conyuge = Column(Text)
+        
+        # Marriage data
+        fecha_matrimonio = Column(Date)
+        lugar_matrimonio = Column(String(255))
+        ultimo_domicilio_conyugal = Column(Text)
+        
+        # Children & assets
+        tiene_hijos = Column(Boolean)
+        info_hijos = Column(Text)
+        tiene_bienes = Column(Boolean)
+        info_bienes = Column(Text)
+        
+        # Economic profile (BLSG)
+        situacion_laboral = Column(String(32))
+        ingreso_mensual_neto = Column(Integer)
+        vivienda_tipo = Column(String(16))
+        patrimonio_inmuebles = Column(Text)
+        patrimonio_registrables = Column(Text)
+        econ_elegible_preliminar = Column(Boolean)
+
+    class Message(Base):
+        __tablename__ = "messages"
+        id = Column(Integer, primary_key=True)
+        case_id = Column(Integer, ForeignKey("cases.id"))
+        role = Column(String(16))  # user|assistant|system
+        content = Column(Text)
+        created_at = Column(DateTime, default=datetime.utcnow)
+
+    class Memory(Base):
+        __tablename__ = "memories"
+        id = Column(Integer, primary_key=True)
+        case_id = Column(Integer, ForeignKey("cases.id"))
+        kind = Column(String(16))  # immediate|session|episodic|semantic
+        content = Column(Text)
+        embedding = Column(Vector(768))  # pgvector for semantic search
+
+    class SemanticKnowledge(Base):
+        __tablename__ = "semantic_knowledge"
+        id = Column(Integer, primary_key=True)
+        title = Column(String(256))
+        content = Column(Text)
+        embedding = Column(Vector(768))
+
+    class User(Base):
+        __tablename__ = "users"
+        id = Column(Integer, primary_key=True)
+        username = Column(String(64), unique=True)
+        email = Column(String(120), unique=True)
+        hashed_password = Column(String(255))
+        role = Column(String(32), default="operator")  # operator | admin
+    ```
+
+    **Repository Pattern**:
+    ```python
+    class CaseRepository:
+        def get_or_create_by_phone(phone: str) -> Case
+        def update(case: Case)
+        def list_all() -> List[Case]
+    
+    class MessageRepository:
+        def add_message(case_id, role, content)
+        def last_messages(case_id, limit=10) -> List[Message]
+    ```
+  </Tab>
+
+  <Tab title="AI Router">
+    **LLMRouter** implements intelligent provider selection:
+
+    Located in `infrastructure/ai/router.py:15-100`
+
+    ```python
+    class LLMRouter(LLMClient):
+        def __init__(self):
+            self.providers = {
+                'ollama_cloud': OllamaCloudClient(),
+                'ollama_local': OllamaClient(),
+                'gemini': GeminiClient()
+            }
+            
+            self.model_map = {
+                'chat': 'llama-3.1-8b-instant',
+                'reasoning': 'deepseek-r1:70b',
+                'hallucination_check': 'glm-4.6:cloud',
+                'vision_ocr': 'gemini-1.5-flash',
+                'embeddings': 'text-embedding-004'
+            }
+            
+            self.fallback_order = ['ollama_cloud', 'ollama_local', 'gemini']
+        
+        async def chat(self, messages, tools=None, task_type='chat'):
+            for provider_name in self.fallback_order:
+                try:
+                    provider = self.providers[provider_name]
+                    response = await provider.chat(messages, tools, model=...)
+                    return response
+                except Exception as e:
+                    logger.warning("provider_failed", provider=provider_name)
+                    continue
+            raise Exception("All LLM providers failed")
+    ```
+
+    **Provider Implementations**:
+    - `GeminiClient` - Google Gemini API
+    - `OllamaCloudClient` - Ollama Cloud API
+    - `OllamaClient` - Local Ollama instance
+  </Tab>
+
+  <Tab title="Messaging">
+    **WAHA WhatsApp Service**
+
+    Located in `infrastructure/messaging/waha_service_impl.py`:
+
+    ```python
+    class WAHAWhatsAppService(WhatsAppService):
+        def __init__(self):
+            self.base_url = settings.waha_base_url
+            self.api_key = settings.waha_api_key
+            self.client = httpx.AsyncClient()
+        
+        async def send_message(self, phone: str, text: str):
+            await self.client.post(
+                f"{self.base_url}/api/sendText",
+                json={"chatId": f"{phone}@c.us", "text": text},
+                headers={"X-Api-Key": self.api_key}
+            )
+        
+        async def send_buttons(self, phone: str, text: str, buttons: List[Dict]):
+            # WhatsApp interactive buttons
+        
+        async def send_list(self, phone: str, text: str, list_data: Dict):
+            # WhatsApp list picker
+        
+        async def download_media(self, media_id: str) -> bytes:
+            # Download image/document from WhatsApp
+    ```
+  </Tab>
+
+  <Tab title="OCR">
+    **Gemini Vision OCR Service**
+
+    Located in `infrastructure/ocr/gemini_ocr_service_impl.py`:
+
+    ```python
+    class GeminiOCRService(OCRService):
+        async def extract_dni_data(self, image_bytes: bytes) -> Dict[str, Any]:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            prompt = """
+            Extraé la siguiente información del DNI argentino:
+            - Apellido
+            - Nombres
+            - DNI
+            - Fecha de nacimiento (formato DD/MM/AAAA)
+            - Sexo
+            Respondé en formato JSON.
+            """
+            
+            response = await model.generate_content([prompt, image])
+            return json.loads(response.text)
+        
+        async def extract_marriage_cert_data(self, image_bytes: bytes):
+            # Similar extraction for marriage certificates
+    ```
+  </Tab>
+</Tabs>
+
+### Domain Layer
+
+Core business entities and configuration.
+
+```python
+# backend/src/core/config.py
+class Settings(BaseSettings):
+    # Database
+    database_url: str
+    
+    # LLM Configuration
+    gemini_api_key: str
+    ollama_base_url: str = "http://localhost:11434"
+    llm_chat_model: str = "llama-3.1-8b-instant"
+    llm_reasoning_model: str = "deepseek-r1:70b"
+    llm_hallucination_model: str = "glm-4.6:cloud"
+    llm_vision_model: str = "gemini-1.5-flash"
+    llm_embedding_model: str = "text-embedding-004"
+    
+    # WhatsApp
+    waha_base_url: str
+    waha_api_key: str
+    
+    # Security
+    secret_key: str
+    allowed_jurisdictions: List[str] = ["San Rafael", "Mendoza"]
+    
+    # Rate Limiting
+    rate_limit_per_ip: int = 30
+    rate_limit_per_user: int = 100
+
+settings = Settings()
+```
+
+## Database Schema
+
+Entity-Relationship diagram:
+
+```mermaid
+erDiagram
+    CASES ||--o{ MESSAGES : has
+    CASES ||--o{ MEMORIES : has
+    CASES ||--o{ SUPPORT_DOCUMENTS : has
+    
+    CASES {
+        int id PK
+        string phone
+        string status
+        string type
+        string phase
+        string nombre
+        string dni
+        date fecha_nacimiento
+        text domicilio
+        string nombre_conyuge
+        string dni_conyuge
+        date fecha_matrimonio
+        string lugar_matrimonio
+        boolean tiene_hijos
+        text info_hijos
+        boolean tiene_bienes
+        text info_bienes
+        string situacion_laboral
+        int ingreso_mensual_neto
+        datetime created_at
+        datetime updated_at
+    }
+    
+    MESSAGES {
+        int id PK
+        int case_id FK
+        string role
+        text content
+        datetime created_at
+    }
+    
+    MEMORIES {
+        int id PK
+        int case_id FK
+        string kind
+        text content
+        vector_768 embedding
+        datetime created_at
+    }
+    
+    SEMANTIC_KNOWLEDGE {
+        int id PK
+        string title
+        text content
+        vector_768 embedding
+        datetime created_at
+    }
+    
+    SUPPORT_DOCUMENTS {
+        int id PK
+        int case_id FK
+        string doc_type
+        string media_id
+        string mime_type
+        text ocr_summary
+        datetime created_at
+    }
+    
+    USERS {
+        int id PK
+        string username
+        string email
+        string hashed_password
+        string full_name
+        string role
+        boolean is_active
+        datetime created_at
+    }
+```
+
+**Key Relationships**:
+- One Case has many Messages (conversation history)
+- One Case has many Memories (contextual storage)
+- One Case has many Support Documents (uploaded files)
+- Semantic Knowledge is global (not tied to cases)
+- Users are independent (operator authentication)
+
+## Technology Stack
+
+<CardGroup cols={2}>
+  <Card title="Backend" icon="server">
+    **Framework & Language**
+    - Python 3.12+
+    - FastAPI 0.115.0 (async web framework)
+    - Uvicorn (ASGI server)
+    - Pydantic 2.8 (data validation)
+
+    **Requirements**: `backend/requirements.txt:1-4`
+  </Card>
+
+  <Card title="Database" icon="database">
+    **Primary Storage**
+    - PostgreSQL 14+ (relational data)
+    - pgvector 0.3.3 (vector embeddings)
+    - SQLAlchemy 2.0.35 (ORM)
+    - psycopg2-binary 2.9.9 (driver)
+
+    **Cache & Queue**
+    - Redis 7.0+ (sessions, rate limiting, Celery)
+
+    **Requirements**: `backend/requirements.txt:5-7,13`
+  </Card>
+
+  <Card title="AI & ML" icon="brain">
+    **LLM Providers**
+    - Google Gemini 1.5 Flash (primary)
+    - Ollama Cloud (reasoning, chat)
+    - Ollama Local (fallback)
+
+    **Libraries**
+    - google-generativeai 0.8.1
+    - httpx 0.27.2 (async HTTP)
+    - tenacity 8.5.0 (retry logic)
+
+    **Requirements**: `backend/requirements.txt:9,14,22`
+  </Card>
+
+  <Card title="Document Processing" icon="file-pdf">
+    **OCR & PDF**
+    - Gemini Vision API (OCR)
+    - ReportLab 4.2.5 (PDF generation)
+    - Pillow 10.4.0 (image processing)
+    - PyMuPDF 1.24.9 (PDF parsing)
+
+    **Requirements**: `backend/requirements.txt:21-24`
+  </Card>
+
+  <Card title="Security" icon="lock">
+    **Authentication & Crypto**
+    - python-jose 3.3.0 (JWT tokens)
+    - passlib 1.7.4 (password hashing)
+    - bcrypt 4.1.2 (bcrypt hashing)
+
+    **Requirements**: `backend/requirements.txt:10-11,26`
+  </Card>
+
+  <Card title="Observability" icon="chart-line">
+    **Logging & Monitoring**
+    - structlog 24.1.0 (structured logging)
+    - OpenTelemetry API 1.27.0 (tracing)
+    - OpenTelemetry SDK 1.27.0
+
+    **Requirements**: `backend/requirements.txt:15,27-28`
+  </Card>
+
+  <Card title="Task Queue" icon="clock">
+    **Async Processing**
+    - Celery 5.4.0 (distributed task queue)
+    - Redis (message broker)
+
+    **Requirements**: `backend/requirements.txt:12`
+  </Card>
+
+  <Card title="Frontend" icon="browser">
+    **Web Dashboard**
+    - React 18+ (TypeScript)
+    - Vite (build tool)
+    - Zustand (state management)
+
+    Located in: `frontend/`
+  </Card>
+</CardGroup>
+
+## System Components & Data Flow
+
+### End-to-End Message Processing
+
+<Steps>
+  <Step title="WhatsApp Webhook">
+    User sends message via WhatsApp → WAHA forwards to `/webhook/whatsapp`
+    
+    ```
+    User: "Hola, quiero iniciar un divorcio"
+         ↓
+    WAHA HTTP API (port 3000)
+         ↓
+    POST /webhook/whatsapp
+    ```
+  </Step>
+
+  <Step title="Request Processing">
+    FastAPI route invokes `ProcessIncomingMessageUseCase`:
+    
+    ```python
+    use_case = ProcessIncomingMessageUseCase(db)
+    request = IncomingMessageRequest(
+        phone="5492604123456",
+        text="Hola, quiero iniciar un divorcio"
+    )
+    response = await use_case.execute(request)
+    ```
+  </Step>
+
+  <Step title="Safety Check">
+    `SafetyLayer` filters input for prompt injection attempts:
+    
+    ```python
+    safety_result = self.safety.filter_input(text)
+    if not safety_result.allowed:
+        return "No puedo procesar esa solicitud..."
+    ```
+  </Step>
+
+  <Step title="Case Retrieval">
+    Repository fetches or creates case by phone:
+    
+    ```python
+    case = self.cases.get_or_create_by_phone(phone)
+    # Returns: Case(id=42, phone="5492604...", phase="inicio")
+    ```
+  </Step>
+
+  <Step title="Memory Storage">
+    User message stored in immediate memory:
+    
+    ```python
+    self.messages.add_message(case.id, "user", text)
+    await self.memory.store_immediate_memory(case.id, f"Usuario: {text}")
+    ```
+  </Step>
+
+  <Step title="Phase Handling">
+    State machine processes based on current phase:
+    
+    ```python
+    if case.phase == "inicio":
+        case.phase = "tipo_divorcio"
+        reply = "¡Hola! ... ¿Qué tipo de divorcio querés iniciar?"
+        buttons = [{"text": "Unilateral"}, {"text": "Conjunta"}]
+    ```
+  </Step>
+
+  <Step title="Hallucination Check">
+    If LLM generated response, validate for fabricated data:
+    
+    ```python
+    context = await self.memory.build_context_for_llm(case.id, text)
+    check = await self.hallucination.check_response(reply, context, text)
+    if not check.is_valid:
+        reply = "Disculpá, tuve un problema..."
+    ```
+  </Step>
+
+  <Step title="Response Storage">
+    Assistant reply stored in database and memory:
+    
+    ```python
+    self.messages.add_message(case.id, "assistant", reply)
+    await self.memory.store_immediate_memory(case.id, f"Asistente: {reply}")
+    ```
+  </Step>
+
+  <Step title="WhatsApp Delivery">
+    Response sent back via WAHA:
+    
+    ```python
+    if response.buttons:
+        await whatsapp.send_buttons(phone, response.text, response.buttons)
+    else:
+        await whatsapp.send_message(phone, response.text)
+    ```
+  </Step>
+</Steps>
+
+### Document Processing Flow
+
+```
+User sends photo → WAHA webhook
+       ↓
+Use case detects media_id
+       ↓
+Download image from WAHA
+       ↓
+Celery task: extract_document_data
+       ↓
+Gemini Vision API (OCR)
+       ↓
+Parse JSON response
+       ↓
+Validate extracted data
+       ↓
+Update Case entity
+       ↓
+Notify user via WhatsApp
+```
+
+## Deployment Architecture
+
+<Info>
+The platform runs as a **Docker Compose** stack for development and staging. Production deployment uses Kubernetes (pending).
+</Info>
+
+### Docker Compose Services
+
+```yaml
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://...
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - WAHA_BASE_URL=http://waha:3000
+    depends_on:
+      - postgres
+      - redis
+  
+  postgres:
+    image: pgvector/pgvector:pg14
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+  
+  waha:
+    image: devlikeapro/waha:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - WHATSAPP_API_KEY=${WAHA_API_KEY}
+  
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+  
+  celery:
+    build: ./backend
+    command: celery -A infrastructure.tasks.celery_app.app worker -l info
+    depends_on:
+      - redis
+      - postgres
+```
+
+### Port Mapping
+
+| Service | Internal Port | External Port | Purpose |
+|---------|---------------|---------------|----------|
+| FastAPI Backend | 8000 | 8000 | REST API & webhooks |
+| PostgreSQL | 5432 | 5432 | Database |
+| Redis | 6379 | 6379 | Cache & queue |
+| WAHA | 3000 | 3000 | WhatsApp API |
+| Ollama | 11434 | 11434 | Local LLM |
+
+## Security Architecture
+
+<Tabs>
+  <Tab title="Authentication">
+    **JWT-based authentication** for operator dashboard:
+
+    ```python
+    # Login
+    POST /api/auth/login
+    {"username": "operator1", "password": "..."}
+    
+    # Response
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "token_type": "bearer"
+    }
+    
+    # Protected endpoint
+    GET /api/cases/
+    Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+    ```
+
+    Implementation: `presentation/api/dependencies/security.py`
+  </Tab>
+
+  <Tab title="Rate Limiting">
+    **Tiered rate limiting** by authentication level:
+
+    ```python
+    # Unauthenticated (by IP)
+    30 requests per minute
+    
+    # Authenticated users
+    100 requests per minute
+    
+    # Redis key format
+    rate_limit:{ip}:{minute}
+    rate_limit:{user_id}:{minute}
+    ```
+
+    Implementation: `presentation/api/middleware/rate_limit.py`
+  </Tab>
+
+  <Tab title="Input Filtering">
+    **Multi-layer input validation**:
+
+    1. **Pydantic schemas** (type validation)
+    2. **SafetyLayer** (prompt injection detection)
+    3. **Domain validators** (business rules)
+    4. **Hallucination detection** (output validation)
+
+    ```python
+    class SafetyLayer:
+        MALICIOUS_PATTERNS = [
+            r"ignore previous instructions",
+            r"system prompt",
+            r"<\|.*?\|>",  # Special tokens
+        ]
+    ```
+  </Tab>
+
+  <Tab title="Security Headers">
+    **HTTP security headers** set by middleware:
+
+    ```python
+    X-Content-Type-Options: nosniff
+    X-Frame-Options: DENY
+    X-XSS-Protection: 1; mode=block
+    Strict-Transport-Security: max-age=31536000; includeSubDomains
+    Content-Security-Policy: default-src 'self'
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+**Production Pending**:
+- [ ] Encryption at rest for sensitive fields (DNI, CUIT)
+- [ ] Complete audit trail (all data access logged)
+- [ ] Secret rotation automation
+- [ ] WAF (Web Application Firewall)
+- [ ] HTTPS enforcement (currently HTTP in dev)
+</Warning>
+
+## Performance Considerations
+
+### Async I/O
+
+The entire stack uses **async/await** for non-blocking I/O:
+
+```python
+# All I/O operations are async
+await self.llm.chat(messages)
+await self.memory.store_immediate_memory(case_id, content)
+await self.whatsapp.send_message(phone, text)
+```
+
+### Database Optimization
+
+- **Indexes** on frequently queried fields: `phone`, `case_id`, `created_at`
+- **pgvector indexes** for embedding searches (IVFFlat or HNSW)
+- **Connection pooling** via SQLAlchemy
+- **Lazy loading** for relationships to avoid N+1 queries
+
+### Caching Strategy
+
+- **Redis caching** for:
+  - Session data (fast lookup)
+  - Rate limit counters (atomic operations)
+  - Frequently accessed case metadata
+- **In-memory caching** for:
+  - LLM responses (short TTL)
+  - Legal knowledge base (semantic search results)
+
+### LLM Latency
+
+**Target**: < 5 seconds (95th percentile)
+
+**Optimizations**:
+- Streaming responses (not yet implemented)
+- Model selection by task (fast models for simple tasks)
+- Automatic fallback to faster providers
+- Prompt engineering for concise responses
+
+## Observability
+
+### Structured Logging
+
+**structlog** provides JSON-formatted logs:
+
+```python
+logger.info(
+    "llm_router_success",
+    provider="ollama_cloud",
+    task_type="chat",
+    model="llama-3.1-8b-instant",
+    latency_ms=245
+)
+```
+
+### OpenTelemetry Tracing
+
+**Distributed tracing** tracks requests across services:
+
+```python
+with tracer.start_as_current_span("conversation.handle_incoming") as span:
+    span.set_attribute("conversation.phone", phone)
+    span.set_attribute("conversation.case_id", case.id)
+    span.set_attribute("conversation.phase", case.phase)
+```
+
+### Metrics Endpoint
+
+**System metrics** available at `/api/metrics/summary`:
+
+```json
+{
+  "total_cases": 142,
+  "active_cases": 37,
+  "completed_cases": 89,
+  "avg_completion_time_hours": 26.3,
+  "messages_today": 453
+}
+```
+
+## Next Steps
+
+Now that you understand the architecture:
+
+<CardGroup cols={3}>
+  <Card title="Introduction" href="/introduction" icon="book">
+    Review the platform overview and problem statement
+  </Card>
+  <Card title="Features" href="/features" icon="star">
+    Explore detailed feature capabilities
+  </Card>
+  <Card title="API Reference" href="/api/overview" icon="code">
+    Dive into API endpoints and schemas
+  </Card>
+</CardGroup>

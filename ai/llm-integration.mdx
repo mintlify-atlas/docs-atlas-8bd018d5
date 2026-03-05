@@ -1,0 +1,285 @@
+---
+title: 'LLM Integration'
+description: 'Multi-provider LLM architecture with intelligent routing and fallback'
+---
+
+## Overview
+
+The platform uses a **router pattern** to intelligently select the optimal LLM provider and model for each task type. This ensures reliability, cost-effectiveness, and performance optimization.
+
+### Provider Hierarchy
+
+1. **Ollama Cloud** (Primary) - Cloud-hosted models with higher performance
+2. **Ollama Local** (Secondary) - Local fallback for embeddings
+3. **Gemini** (Tertiary) - Google AI as final fallback
+
+## Architecture
+
+### LLMRouter Class
+
+The `LLMRouter` (`backend/src/infrastructure/ai/router.py:15`) implements the Strategy Pattern to manage multiple LLM providers with automatic fallback.
+
+```python
+from infrastructure.ai.router import LLMRouter
+
+router = LLMRouter()
+
+# Chat with automatic provider selection
+response = await router.chat(
+    messages=[{"role": "user", "content": "¿Cuánto cuesta el divorcio?"}],
+    task_type="chat"  # Selects optimal model
+)
+```
+
+### Task-Specific Model Selection
+
+The router maps each task type to a specialized model:
+
+```python
+# backend/src/infrastructure/ai/router.py:38
+self.model_map = {
+    'chat': settings.llm_chat_model,              # General conversation
+    'reasoning': settings.llm_reasoning_model,    # Complex legal reasoning
+    'hallucination_check': settings.llm_hallucination_model,  # Validation
+    'vision_ocr': settings.llm_vision_model,      # Document OCR
+    'embeddings': settings.llm_embedding_model    # Semantic search
+}
+```
+
+**Default Models** (configured via environment):
+- Chat: `qwen3-30b:cloud`
+- Reasoning: `llama3-70b:cloud`
+- Hallucination Check: `glm-4.6:cloud`
+- Vision OCR: `qwen3-vl:cloud`
+- Embeddings: `nomic-embed-text` (local)
+
+## Provider Implementations
+
+### Gemini Client
+
+**Primary provider** for production workloads with highest reliability.
+
+```python
+# backend/src/infrastructure/ai/gemini_client.py:6
+class GeminiClient(LLMClient):
+    def __init__(self):
+        genai.configure(api_key=settings.gemini_api_key)
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
+        self.embed_model = "models/gemini-embedding-001"
+    
+    async def chat(self, messages: List[Dict[str, str]]) -> str:
+        parts = [f"{m['role'].upper()}: {m['content']}" for m in messages]
+        prompt = "\n".join(parts)
+        resp = await self.model.generate_content_async(prompt)
+        return resp.text or ""
+```
+
+**Features:**
+- Fast response times (~500ms average)
+- High token limits (2M context window)
+- Built-in safety filters
+- Vision capabilities (document OCR)
+
+### Ollama Client
+
+**Local fallback** for privacy-sensitive operations and cost optimization.
+
+```python
+# backend/src/infrastructure/ai/ollama_client.py:6
+class OllamaClient(LLMClient):
+    def __init__(self, model: str = "nomic-embed-text"):
+        self.base = settings.ollama_base_url.rstrip("/")
+        self.model = model
+    
+    async def chat(self, messages: List[Dict[str, str]]) -> str:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{self.base}/api/chat",
+                json={"model": self.model, "messages": messages}
+            )
+            return resp.json().get("message", {}).get("content", "")
+```
+
+**Use Cases:**
+- Embeddings generation (preferred for speed)
+- Development/testing without API costs
+- Air-gapped deployments
+
+## Fallback Chain
+
+The router attempts providers in sequence until one succeeds:
+
+```python
+# backend/src/infrastructure/ai/router.py:69
+for provider_name in self.fallback_order:
+    try:
+        provider = self.providers[provider_name]
+        
+        logger.info(
+            "llm_router_attempt",
+            provider=provider_name,
+            task_type=task_type,
+            model=model
+        )
+        
+        # Try provider-specific call
+        if provider_name == 'ollama_cloud':
+            response = await provider.chat(messages, tools=tools, model=model)
+        else:
+            response = await provider.chat(messages, tools=tools)
+        
+        logger.info("llm_router_success", provider=provider_name)
+        return response
+        
+    except Exception as e:
+        logger.warning(
+            "llm_router_provider_failed",
+            provider=provider_name,
+            error=str(e)
+        )
+        
+        if provider_name == self.fallback_order[-1]:
+            raise  # All providers failed
+        
+        continue  # Try next provider
+```
+
+**Benefits:**
+- Zero downtime during provider outages
+- Automatic cost optimization
+- Degraded functionality instead of hard failures
+
+## Prompt Engineering Patterns
+
+### Structured Output Prompts
+
+For consistent JSON responses:
+
+```python
+prompt = """Analiza la siguiente consulta legal y responde en formato JSON:
+
+{
+  "categoria": "divorcio|union_libre|alimentos|otro",
+  "urgencia": "alta|media|baja",
+  "requiere_mediacion": boolean,
+  "documentos_faltantes": ["lista de documentos"]
+}
+
+Consulta: {user_query}
+
+Responde SOLO con el JSON, sin explicaciones."""
+
+response = await router.chat(
+    messages=[{"role": "user", "content": prompt}],
+    task_type="reasoning"
+)
+```
+
+### Few-Shot Legal Prompts
+
+For domain-specific reasoning:
+
+```python
+prompt = f"""Eres un experto en derecho de familia argentino de Mendoza.
+
+Ejemplos de respuestas correctas:
+
+P: ¿Cuánto cuesta el divorcio?
+R: En la Defensoría Civil de San Rafael, el trámite es GRATUITO. Solo necesitas presentar DNI, acta de matrimonio y completar el formulario.
+
+P: ¿Cuánto demora?
+R: El tiempo varía según la complejidad del caso. En divorcios de mutuo acuerdo, suele tomar entre 3-6 meses. Casos contenciosos pueden demorar más.
+
+Ahora responde:
+P: {user_question}
+R:"""
+```
+
+### Context-Aware Prompts
+
+Combining multiple memory types (see [Memory Types](/ai/memory-types)):
+
+```python
+from application.services.memory_service import MemoryService
+
+memory_service = MemoryService(db, llm_router)
+context = await memory_service.build_context_for_llm(case_id, question)
+
+prompt = f"""{context}
+
+## Pregunta actual:
+{question}
+
+Responde usando SOLO la información del contexto anterior. Si no tienes información suficiente, indícalo claramente."""
+
+response = await router.chat(
+    messages=[{"role": "user", "content": prompt}],
+    task_type="chat"
+)
+```
+
+## Configuration
+
+Environment variables for LLM configuration:
+
+```bash
+# Gemini (Primary)
+GEMINI_API_KEY=your_api_key_here
+
+# Ollama (Fallback)
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Model Selection
+LLM_CHAT_MODEL=qwen3-30b:cloud
+LLM_REASONING_MODEL=llama3-70b:cloud
+LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+LLM_VISION_MODEL=qwen3-vl:cloud
+LLM_EMBEDDING_MODEL=nomic-embed-text
+```
+
+## Performance Monitoring
+
+All LLM calls are logged with structured logging:
+
+```python
+logger.info(
+    "llm_router_success",
+    provider="ollama_cloud",
+    task_type="chat",
+    model="qwen3-30b:cloud",
+    latency_ms=450,
+    tokens=1234
+)
+```
+
+**Key Metrics:**
+- Provider success rate
+- Fallback frequency
+- Average latency per task type
+- Token usage per case
+
+## Error Handling
+
+Common failure modes and recovery:
+
+| Error | Cause | Recovery |
+|-------|-------|----------|
+| `ProviderTimeout` | API slow/overloaded | Automatic fallback to next provider |
+| `RateLimitExceeded` | API quota exhausted | Switch to local Ollama |
+| `InvalidAPIKey` | Configuration error | Skip provider, try next |
+| `ModelNotFound` | Model name incorrect | Log error, use default model |
+| `AllProvidersFailed` | All providers down | Return error to user with degraded UX |
+
+## Best Practices
+
+1. **Always specify task_type** - Ensures optimal model selection
+2. **Use structured prompts** - Improves consistency and parsability
+3. **Include context limits** - Prevent token overflow with long histories
+4. **Monitor fallback rates** - High fallback indicates primary provider issues
+5. **Test with local Ollama first** - Faster iteration during development
+
+## Related
+
+- [Memory Types](/ai/memory-types) - Context building for LLM prompts
+- [Hallucination Detection](/ai/hallucination-detection) - Validating LLM responses
+- [OCR Processing](/ai/ocr-processing) - Vision model integration

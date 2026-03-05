@@ -1,0 +1,212 @@
+---
+title: REST API Overview
+description: Introduction to the Defensoría Civil API, including base URL, authentication, rate limiting, and common patterns
+---
+
+The Defensoría Civil REST API provides programmatic access to the divorce case management platform. This API is designed for internal operators and system integrations.
+
+## Base URL
+
+All API requests are made to:
+
+```
+http://localhost:8000
+```
+
+In production, use your deployed domain:
+
+```
+https://api.defensoria.example.com
+```
+
+## API Versioning
+
+The current API version is **v0.1.0**. The API uses URL path prefixes for versioning:
+
+- `/api/auth/*` - Authentication endpoints
+- `/api/cases/*` - Case management endpoints
+- `/api/metrics/*` - Analytics and metrics endpoints
+- `/webhook/*` - Webhook receivers (WhatsApp)
+
+## Authentication
+
+Most endpoints require JWT authentication. See the [Authentication](/api/authentication) page for details.
+
+**Required Header:**
+
+```http
+Authorization: Bearer <your_jwt_token>
+```
+
+**Public Endpoints:**
+
+- `POST /api/auth/login` - Login endpoint
+- `POST /api/auth/register` - User registration
+- `POST /webhook/whatsapp` - WhatsApp webhook (external)
+- `GET /health` - Health check
+
+## Rate Limiting
+
+The API implements rate limiting to prevent abuse:
+
+| Endpoint Type | Limit | Window |
+|--------------|-------|--------|
+| Authentication | 5 requests | per minute |
+| API endpoints | 100 requests | per minute |
+| Webhook | 1000 requests | per minute |
+
+**Rate Limit Headers:**
+
+```http
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 95
+X-RateLimit-Reset: 1678901234
+```
+
+When rate limit is exceeded:
+
+```json
+{
+  "detail": "Rate limit exceeded. Try again later."
+}
+```
+
+## Error Response Format
+
+All error responses follow FastAPI's standard format:
+
+```json
+{
+  "detail": "Error message describing what went wrong"
+}
+```
+
+**Common HTTP Status Codes:**
+
+| Code | Meaning | Example |
+|------|---------|----------|
+| `200` | Success | Request completed successfully |
+| `201` | Created | Resource created successfully |
+| `400` | Bad Request | Invalid request body or parameters |
+| `401` | Unauthorized | Missing or invalid authentication token |
+| `403` | Forbidden | User doesn't have permission |
+| `404` | Not Found | Resource doesn't exist |
+| `422` | Unprocessable Entity | Validation error |
+| `429` | Too Many Requests | Rate limit exceeded |
+| `500` | Internal Server Error | Server encountered an error |
+
+## Pagination Pattern
+
+List endpoints support cursor-based pagination:
+
+**Request Parameters:**
+
+```http
+GET /api/cases/?page=1&page_size=50
+```
+
+**Response:**
+
+```json
+{
+  "items": [...],
+  "total": 150,
+  "page": 1,
+  "page_size": 50,
+  "pages": 3
+}
+```
+
+<ParamField query="page" type="integer" default="1">
+  Page number to retrieve (1-indexed)
+</ParamField>
+
+<ParamField query="page_size" type="integer" default="50">
+  Number of items per page (max: 100)
+</ParamField>
+
+## Filtering and Search
+
+List endpoints support filtering via query parameters:
+
+```http
+GET /api/cases/?status=active&type=unilateral&search=juan
+```
+
+## Date and Time Format
+
+All timestamps use ISO 8601 format in UTC:
+
+```json
+{
+  "created_at": "2026-03-05T12:34:56.789123",
+  "fecha_nacimiento": "1985-06-15"
+}
+```
+
+- **DateTime fields**: Full ISO 8601 with microseconds
+- **Date fields**: YYYY-MM-DD format
+
+## Content Type
+
+All requests and responses use JSON:
+
+```http
+Content-Type: application/json
+```
+
+Exceptions:
+- PDF downloads: `application/pdf`
+- Image downloads: `image/jpeg`, `image/png`, etc.
+
+## CORS Configuration
+
+The API allows CORS from:
+
+- `http://localhost:3000` (React development)
+- `http://localhost:5173` (Vite development)
+
+Credentials are supported for authenticated requests.
+
+## Security Headers
+
+All responses include security headers:
+
+```http
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+X-XSS-Protection: 1; mode=block
+```
+
+## Interactive Documentation
+
+FastAPI provides interactive API documentation:
+
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+
+These interfaces allow you to test endpoints directly from the browser.
+
+## Common Response Codes by Operation
+
+**GET Requests:**
+- `200` - Resource found and returned
+- `404` - Resource not found
+
+**POST Requests:**
+- `200` - Action completed
+- `201` - Resource created
+- `400` - Invalid input
+- `422` - Validation error
+
+**PATCH Requests:**
+- `200` - Resource updated
+- `404` - Resource not found
+- `422` - Validation error
+
+## Next Steps
+
+- [Authentication](/api/authentication) - Learn how to authenticate
+- [Webhooks](/api/webhooks) - Set up WhatsApp webhooks
+- [Cases](/api/cases) - Manage divorce cases
+- [Metrics](/api/metrics) - Access system analytics

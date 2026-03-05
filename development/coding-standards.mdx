@@ -1,0 +1,688 @@
+---
+title: Coding Standards
+description: Code style guidelines, formatting rules, and best practices for the Defensoría Civil platform
+---
+
+## Code Style Philosophy
+
+We prioritize:
+
+1. **Readability** - Code is read more often than written
+2. **Consistency** - Uniform style across the codebase
+3. **Maintainability** - Easy to understand and modify
+4. **Type Safety** - Catch errors at development time
+
+## Python Code Style
+
+### Formatters and Linters
+
+We use automated tools to enforce code style:
+
+| Tool | Purpose | Version |
+|------|---------|--------|
+| **Black** | Code formatter (opinionated) | 24.10.0 |
+| **Ruff** | Fast linter (replaces Flake8, isort) | 0.6.9 |
+| **mypy** | Static type checker (optional) | Latest |
+
+### Running Code Quality Tools
+
+```bash
+# Format all code with Black
+black backend/src backend/tests
+
+# Check formatting without modifying
+black backend/src backend/tests --check
+
+# Lint with Ruff
+ruff check backend/src backend/tests
+
+# Auto-fix Ruff issues
+ruff check backend/src backend/tests --fix
+
+# Type check with mypy (optional)
+mypy backend/src
+```
+
+### Pre-commit Hook
+
+Install pre-commit hooks to automatically format code:
+
+```bash
+# Install pre-commit
+pip install pre-commit
+
+# Install hooks
+pre-commit install
+
+# Run manually
+pre-commit run --all-files
+```
+
+Create `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3.12
+  
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+```
+
+## Code Formatting
+
+### Black Configuration
+
+Black uses default settings (88 characters line length). We follow these conventions:
+
+```python
+# Good - Black formatted
+def process_incoming_message(
+    phone: str,
+    text: str,
+    case_id: Optional[int] = None,
+) -> dict[str, Any]:
+    """Process incoming WhatsApp message."""
+    return {
+        "phone": phone,
+        "text": text,
+        "case_id": case_id,
+    }
+
+# Bad - Manual formatting
+def process_incoming_message(phone: str, text: str, case_id: Optional[int] = None) -> dict[str, Any]:
+    return {"phone": phone, "text": text, "case_id": case_id}
+```
+
+### Import Order
+
+Ruff automatically organizes imports:
+
+```python
+# 1. Standard library
+import os
+from typing import Optional, Any
+from datetime import datetime
+
+# 2. Third-party
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from pydantic import BaseModel
+
+# 3. Local application
+from application.use_cases.process_incoming_message import ProcessIncomingMessageUseCase
+from infrastructure.persistence.repositories import CaseRepository
+from core.domain.entities import Case
+```
+
+### String Formatting
+
+Prefer f-strings for readability:
+
+```python
+# Good
+name = "Juan"
+age = 35
+message = f"Hola {name}, tienes {age} años"
+
+# Acceptable for simple cases
+message = f"Error: {error_code}"
+
+# Avoid
+message = "Hola " + name + ", tienes " + str(age) + " años"
+message = "Hola {}, tienes {} años".format(name, age)
+```
+
+## Type Hints
+
+### Required for Public APIs
+
+All public functions and methods must have type hints:
+
+```python
+from typing import Optional, List, Dict, Any
+
+# Good - Full type hints
+def validate_birth_date(date_str: str) -> ValidationResult:
+    """Validate birth date string."""
+    ...
+
+async def chat(
+    messages: List[Dict[str, str]],
+    task_type: str = "chat",
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Send chat request to LLM."""
+    ...
+
+# Bad - Missing types
+def validate_birth_date(date_str):
+    ...
+```
+
+### Modern Type Syntax (Python 3.12+)
+
+Use modern type syntax when possible:
+
+```python
+# Good - Python 3.12+ syntax
+def process_cases(cases: list[Case]) -> dict[str, Any]:
+    ...
+
+# Acceptable - Older syntax (still supported)
+from typing import List, Dict, Any
+
+def process_cases(cases: List[Case]) -> Dict[str, Any]:
+    ...
+```
+
+### Optional vs None
+
+```python
+from typing import Optional
+
+# Good - Explicit Optional
+def get_case(case_id: int) -> Optional[Case]:
+    """Get case by ID, returns None if not found."""
+    ...
+
+# Good - Default None parameter
+def create_case(
+    phone: str,
+    case_type: Optional[str] = None,
+) -> Case:
+    ...
+```
+
+## Docstrings
+
+### Google Style Docstrings
+
+We use **Google-style docstrings** for all public functions:
+
+```python
+def validate_address(
+    address: str,
+    allowed_jurisdictions: list[str],
+) -> AddressValidationResult:
+    """Validate address jurisdiction.
+    
+    Args:
+        address: Full address string (e.g., "San Martín 123, San Rafael, Mendoza")
+        allowed_jurisdictions: List of allowed jurisdiction names
+    
+    Returns:
+        AddressValidationResult with is_valid flag and parsed components
+    
+    Raises:
+        ValueError: If address format is invalid
+    
+    Example:
+        >>> result = validate_address(
+        ...     "Belgrano 456, San Rafael, Mendoza",
+        ...     ["San Rafael", "Mendoza"]
+        ... )
+        >>> assert result.is_valid
+    """
+    ...
+```
+
+### Class Docstrings
+
+```python
+class LLMRouter:
+    """Routes LLM requests to appropriate providers with fallback.
+    
+    Manages multiple LLM providers (Ollama Cloud, Ollama Local, Gemini)
+    with automatic fallback on failure. Selects models based on task type.
+    
+    Attributes:
+        providers: Dictionary of available LLM providers
+        fallback_order: Priority order for provider selection
+        model_map: Mapping of task types to model names
+    
+    Example:
+        >>> router = LLMRouter()
+        >>> response = await router.chat(
+        ...     messages=[{"role": "user", "content": "Hola"}],
+        ...     task_type="chat"
+        ... )
+    """
+    
+    def __init__(self) -> None:
+        """Initialize router with configured providers."""
+        ...
+```
+
+### Module Docstrings
+
+```python
+"""Address validation service implementation.
+
+Provides jurisdiction validation for addresses in Argentina,
+specifically San Rafael and Mendoza regions.
+
+Example:
+    from infrastructure.validation.address_validation_service_impl import (
+        SimpleAddressValidationService,
+    )
+    
+    service = SimpleAddressValidationService()
+    result = service.validate_address("San Martín 123, San Rafael")
+"""
+```
+
+## Clean Architecture Guidelines
+
+We follow **Clean Architecture** principles with strict layer separation.
+
+### Layer Dependencies
+
+```
+Domain ←─── Application ←─── Infrastructure
+   ↑                              ↓
+   └──────────────────────────────┘
+                                  ↓
+                            Presentation
+```
+
+**Rules:**
+- **Domain** has no dependencies (pure business logic)
+- **Application** depends only on Domain
+- **Infrastructure** implements Application interfaces
+- **Presentation** depends on Application and Infrastructure
+
+### Domain Layer
+
+Pure business entities with no external dependencies:
+
+```python
+# domain/entities.py
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+@dataclass
+class Case:
+    """Divorce case entity."""
+    
+    id: Optional[int]
+    phone: str
+    case_type: str
+    status: str
+    created_at: datetime
+    
+    def is_active(self) -> bool:
+        """Check if case is in active status."""
+        return self.status in ["in_progress", "pending_documents"]
+    
+    def can_transition_to(self, new_status: str) -> bool:
+        """Validate if status transition is allowed."""
+        valid_transitions = {
+            "in_progress": ["pending_documents", "completed", "cancelled"],
+            "pending_documents": ["in_progress", "completed"],
+        }
+        return new_status in valid_transitions.get(self.status, [])
+```
+
+### Application Layer
+
+Use cases and interfaces:
+
+```python
+# application/use_cases/process_incoming_message.py
+from dataclasses import dataclass
+from sqlalchemy.orm import Session
+
+from application.interfaces.ai.llm_client import LLMClient
+from application.interfaces.validation.address_validation_service import (
+    AddressValidationService,
+)
+
+@dataclass
+class IncomingMessageRequest:
+    """Request DTO for incoming message."""
+    phone: str
+    text: str
+    image_url: Optional[str] = None
+
+@dataclass
+class IncomingMessageResponse:
+    """Response DTO for incoming message."""
+    text: str
+    case_id: int
+    phase: str
+
+class ProcessIncomingMessageUseCase:
+    """Process incoming WhatsApp message use case."""
+    
+    def __init__(
+        self,
+        db: Session,
+        llm_client: LLMClient,
+        address_validator: AddressValidationService,
+    ) -> None:
+        self.db = db
+        self.llm = llm_client
+        self.address_validator = address_validator
+    
+    async def execute(
+        self,
+        request: IncomingMessageRequest,
+    ) -> IncomingMessageResponse:
+        """Execute use case."""
+        ...
+```
+
+### Infrastructure Layer
+
+Implementations of application interfaces:
+
+```python
+# infrastructure/validation/address_validation_service_impl.py
+import re
+from typing import Optional
+
+from application.interfaces.validation.address_validation_service import (
+    AddressValidationService,
+    AddressValidationResult,
+)
+
+class SimpleAddressValidationService(AddressValidationService):
+    """Simple address validation implementation."""
+    
+    def __init__(self, allowed_jurisdictions: Optional[list[str]] = None) -> None:
+        self.allowed_jurisdictions = allowed_jurisdictions or [
+            "San Rafael",
+            "Mendoza",
+        ]
+    
+    def validate_address(self, address: str) -> AddressValidationResult:
+        """Validate address jurisdiction."""
+        address_lower = address.lower()
+        
+        # Check jurisdiction
+        has_valid_jurisdiction = any(
+            jurisdiction.lower() in address_lower
+            for jurisdiction in self.allowed_jurisdictions
+        )
+        
+        return AddressValidationResult(
+            is_valid=has_valid_jurisdiction,
+            jurisdiction=self._extract_jurisdiction(address),
+            error_message=None if has_valid_jurisdiction else (
+                f"Dirección debe estar en: {', '.join(self.allowed_jurisdictions)}"
+            ),
+        )
+```
+
+## SOLID Principles
+
+### Single Responsibility Principle (SRP)
+
+Each class should have one reason to change:
+
+```python
+# Good - Single responsibility
+class DateValidationService:
+    """Validates dates only."""
+    def validate_birth_date(self, date_str: str) -> ValidationResult:
+        ...
+
+class AddressValidationService:
+    """Validates addresses only."""
+    def validate_address(self, address: str) -> ValidationResult:
+        ...
+
+# Bad - Multiple responsibilities
+class ValidationService:
+    """Validates everything."""
+    def validate_birth_date(self, date_str: str) -> ValidationResult:
+        ...
+    
+    def validate_address(self, address: str) -> ValidationResult:
+        ...
+    
+    def validate_phone(self, phone: str) -> ValidationResult:
+        ...
+```
+
+### Open/Closed Principle (OCP)
+
+Open for extension, closed for modification:
+
+```python
+# Good - Extensible via inheritance
+class LLMClient(ABC):
+    """Abstract LLM client."""
+    
+    @abstractmethod
+    async def chat(self, messages: list[dict]) -> str:
+        ...
+
+class OllamaClient(LLMClient):
+    async def chat(self, messages: list[dict]) -> str:
+        # Ollama-specific implementation
+        ...
+
+class GeminiClient(LLMClient):
+    async def chat(self, messages: list[dict]) -> str:
+        # Gemini-specific implementation
+        ...
+```
+
+### Liskov Substitution Principle (LSP)
+
+Subtypes must be substitutable for their base types:
+
+```python
+class ValidationService(ABC):
+    @abstractmethod
+    def validate(self, value: str) -> ValidationResult:
+        """Validate value."""
+        ...
+
+class DateValidationService(ValidationService):
+    def validate(self, value: str) -> ValidationResult:
+        # Returns ValidationResult, as expected
+        ...
+
+class AddressValidationService(ValidationService):
+    def validate(self, value: str) -> ValidationResult:
+        # Returns ValidationResult, as expected
+        ...
+```
+
+### Interface Segregation Principle (ISP)
+
+Clients shouldn't depend on interfaces they don't use:
+
+```python
+# Good - Specific interfaces
+class OCRService(ABC):
+    @abstractmethod
+    async def extract_dni_data(self, image: bytes) -> DNIData:
+        ...
+
+class DocumentGenerationService(ABC):
+    @abstractmethod
+    def generate_petition_pdf(self, case_data: dict) -> bytes:
+        ...
+
+# Bad - Fat interface
+class DocumentService(ABC):
+    @abstractmethod
+    async def extract_dni_data(self, image: bytes) -> DNIData:
+        ...
+    
+    @abstractmethod
+    def generate_petition_pdf(self, case_data: dict) -> bytes:
+        ...
+    
+    # Many clients don't need all these methods
+```
+
+### Dependency Inversion Principle (DIP)
+
+Depend on abstractions, not concretions:
+
+```python
+# Good - Depends on abstraction
+class ProcessIncomingMessageUseCase:
+    def __init__(
+        self,
+        db: Session,
+        llm_client: LLMClient,  # Abstract interface
+    ) -> None:
+        self.db = db
+        self.llm = llm_client
+
+# Bad - Depends on concrete implementation
+class ProcessIncomingMessageUseCase:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.llm = GeminiClient()  # Concrete class
+```
+
+## Code Examples
+
+### Real Example: Conversation Engine
+
+From `backend/src/application/services/conversation_engine.py`:
+
+```python
+from typing import Optional
+from sqlalchemy.orm import Session
+from opentelemetry import trace
+
+from infrastructure.persistence.repositories import (
+    CaseRepository,
+    MessageRepository,
+)
+from infrastructure.ai.router import LLMRouter
+from infrastructure.ai.safety_layer import SafetyLayer
+
+tracer = trace.get_tracer(__name__)
+
+class ConversationEngine:
+    """Manages conversation flow with safety and validation."""
+    
+    def __init__(self, db: Optional[Session] = None) -> None:
+        """Initialize conversation engine.
+        
+        Args:
+            db: Database session (optional, creates new if not provided)
+        """
+        self.db = db or SessionLocal()
+        self.cases = CaseRepository(self.db)
+        self.messages = MessageRepository(self.db)
+        self.llm = LLMRouter()
+        self.safety = SafetyLayer()
+    
+    async def handle_incoming(
+        self,
+        phone: str,
+        text: str,
+    ) -> str:
+        """Handle incoming message with safety filtering.
+        
+        Args:
+            phone: User phone number
+            text: Message text
+        
+        Returns:
+            Response text to send back to user
+        """
+        with tracer.start_as_current_span("conversation.handle_incoming") as span:
+            span.set_attribute("conversation.phone", phone)
+            
+            # Safety filter
+            safety_result = self.safety.filter_input(text)
+            if not safety_result.allowed:
+                return self._blocked_response(phone, text, safety_result.reason)
+            
+            # Get or create case
+            case = self.cases.get_or_create_by_phone(phone)
+            span.set_attribute("conversation.case_id", case.id)
+            
+            # Store message
+            self.messages.add_message(case.id, "user", text)
+            
+            # Process based on phase
+            response = await self._process_phase(case, text)
+            
+            # Store response
+            self.messages.add_message(case.id, "assistant", response)
+            
+            return response
+```
+
+## Pull Request Checklist
+
+Before submitting a PR, ensure:
+
+### Code Quality
+- [ ] Code is formatted with Black
+- [ ] No Ruff linting errors
+- [ ] Type hints on all public functions
+- [ ] Docstrings for all public functions
+- [ ] No commented-out code
+- [ ] No debug print statements
+
+### Testing
+- [ ] Unit tests added for new code
+- [ ] Integration tests added if needed
+- [ ] All tests pass locally
+- [ ] Coverage doesn't decrease
+
+### Architecture
+- [ ] Follows Clean Architecture layers
+- [ ] Dependencies point in correct direction
+- [ ] SOLID principles followed
+- [ ] No circular dependencies
+
+### Documentation
+- [ ] README updated if needed
+- [ ] API docs updated if endpoints changed
+- [ ] Inline comments for complex logic
+
+### Security
+- [ ] No secrets in code
+- [ ] Input validation added
+- [ ] No SQL injection vulnerabilities
+- [ ] No obvious security issues
+
+### Git
+- [ ] Commit messages are clear
+- [ ] Branch is up to date with develop
+- [ ] No merge conflicts
+
+## Code Review Guidelines
+
+### As a Reviewer
+
+1. **Check functionality first** - Does it work as intended?
+2. **Review tests** - Are edge cases covered?
+3. **Check architecture** - Does it follow Clean Architecture?
+4. **Look for bugs** - Security issues, race conditions, edge cases
+5. **Suggest improvements** - But be constructive
+
+### As an Author
+
+1. **Self-review first** - Review your own PR before submitting
+2. **Keep PRs small** - Easier to review (< 500 lines)
+3. **Provide context** - Explain why, not just what
+4. **Be receptive** - Consider all feedback seriously
+5. **Respond promptly** - Don't let PRs go stale
+
+## Next Steps
+
+- Review [Testing Guide](/development/testing) for test strategies
+- Check [Development Setup](/development/setup) for environment configuration
+- Explore [Architecture Documentation](/architecture) for system design patterns

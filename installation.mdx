@@ -1,0 +1,495 @@
+---
+title: 'Installation'
+description: 'Detailed installation instructions for Docker and local development'
+---
+
+## Installation Methods
+
+The Defensoría Civil platform can be installed in two ways:
+
+1. **Docker** (recommended) - Easiest setup with all dependencies included
+2. **Local Development** - For active development and debugging
+
+## System Requirements
+
+### For Docker Installation
+
+- **Docker** 20.10 or higher
+- **Docker Compose** 2.0 or higher
+- **4GB RAM** minimum (8GB recommended)
+- **10GB disk space**
+
+### For Local Development
+
+- **Python** 3.12 or higher
+- **PostgreSQL** 14 or higher
+- **Redis** 7 or higher
+- **4GB RAM** minimum (8GB recommended)
+- **Operating System**: Linux, macOS, or Windows with WSL2
+
+## Docker Installation
+
+<Steps>
+  <Step title="Install Docker">
+    If you don't have Docker installed:
+    
+    <CodeGroup>
+    ```bash macOS
+    # Install Docker Desktop for Mac
+    brew install --cask docker
+    ```
+    
+    ```bash Ubuntu/Debian
+    # Install Docker and Docker Compose
+    sudo apt-get update
+    sudo apt-get install docker.io docker-compose-plugin
+    sudo usermod -aG docker $USER
+    # Log out and back in for group changes to take effect
+    ```
+    
+    ```bash Windows
+    # Install Docker Desktop for Windows
+    # Download from: https://www.docker.com/products/docker-desktop
+    # Requires WSL2
+    ```
+    </CodeGroup>
+    
+    Verify installation:
+    ```bash
+    docker --version
+    docker compose version
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone <repository-url>
+    cd def-civil-divorcios
+    ```
+  </Step>
+
+  <Step title="Configure environment">
+    Create your environment file:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    Edit `.env` and configure at minimum:
+    
+    ```env
+    # Required: Add your Gemini API key
+    GEMINI_API_KEY=your_api_key_here
+    
+    # Optional: Change if needed
+    SECRET_KEY=change_me_to_a_secure_random_string
+    APP_ENV=development
+    ```
+    
+    <Warning>
+      In production, always generate a secure random `SECRET_KEY` with at least 32 characters.
+    </Warning>
+  </Step>
+
+  <Step title="Build and start services">
+    ```bash
+    docker compose up --build
+    ```
+    
+    To run in detached mode (background):
+    ```bash
+    docker compose up -d --build
+    ```
+    
+    View logs:
+    ```bash
+    # All services
+    docker compose logs -f
+    
+    # Specific service
+    docker compose logs -f api
+    ```
+  </Step>
+
+  <Step title="Verify installation">
+    Test the health endpoint:
+    
+    ```bash
+    curl http://localhost:8000/health/
+    ```
+    
+    Access the interactive API documentation:
+    ```
+    http://localhost:8000/docs
+    ```
+  </Step>
+</Steps>
+
+## Local Development Installation
+
+For active development, you may prefer running services locally outside of Docker.
+
+<Steps>
+  <Step title="Install Python 3.12+">
+    <CodeGroup>
+    ```bash macOS
+    brew install python@3.12
+    ```
+    
+    ```bash Ubuntu/Debian
+    sudo apt-get update
+    sudo apt-get install python3.12 python3.12-venv python3.12-dev
+    ```
+    
+    ```bash Windows (WSL2)
+    sudo apt-get update
+    sudo apt-get install python3.12 python3.12-venv python3.12-dev
+    ```
+    </CodeGroup>
+    
+    Verify:
+    ```bash
+    python3.12 --version
+    ```
+  </Step>
+
+  <Step title="Install PostgreSQL 14+ with pgvector">
+    <CodeGroup>
+    ```bash macOS
+    brew install postgresql@14
+    brew services start postgresql@14
+    
+    # Install pgvector extension
+    brew install pgvector
+    ```
+    
+    ```bash Ubuntu/Debian
+    sudo apt-get install postgresql-14 postgresql-contrib-14
+    sudo systemctl start postgresql
+    sudo systemctl enable postgresql
+    
+    # Install pgvector
+    sudo apt-get install postgresql-14-pgvector
+    ```
+    </CodeGroup>
+    
+    Create the database:
+    ```bash
+    # Create database
+    createdb def_civil
+    
+    # Enable pgvector extension
+    psql def_civil -c "CREATE EXTENSION vector;"
+    ```
+    
+    <Note>
+      The **pgvector** extension is required for semantic search and embeddings functionality.
+    </Note>
+  </Step>
+
+  <Step title="Install Redis">
+    <CodeGroup>
+    ```bash macOS
+    brew install redis
+    brew services start redis
+    ```
+    
+    ```bash Ubuntu/Debian
+    sudo apt-get install redis-server
+    sudo systemctl start redis-server
+    sudo systemctl enable redis-server
+    ```
+    </CodeGroup>
+    
+    Verify:
+    ```bash
+    redis-cli ping
+    # Should return: PONG
+    ```
+  </Step>
+
+  <Step title="Clone and setup Python environment">
+    ```bash
+    git clone <repository-url>
+    cd def-civil-divorcios/backend
+    
+    # Create virtual environment
+    python3.12 -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    
+    # Install dependencies
+    pip install -r requirements.txt
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Create `.env` in the project root:
+    
+    ```bash
+    cd ..
+    cp .env.example .env
+    ```
+    
+    Update `.env` for local development:
+    
+    ```env
+    APP_ENV=development
+    SECRET_KEY=change_me_to_a_secure_random_string
+    
+    # Local database (adjust user/password as needed)
+    DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil
+    
+    # Local Redis
+    REDIS_URL=redis://localhost:6379/0
+    
+    # Required: Gemini API key
+    GEMINI_API_KEY=your_api_key_here
+    
+    # Optional: Ollama (if running locally)
+    OLLAMA_BASE_URL=http://localhost:11434
+    
+    # WhatsApp (if testing integrations)
+    WAHA_BASE_URL=http://localhost:3000
+    WAHA_API_KEY=changeme
+    
+    # Models configuration
+    LLM_CHAT_MODEL=minimax-m2:cloud
+    LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+    LLM_VISION_MODEL=qwen3-vl:cloud
+    LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+    LLM_EMBEDDING_MODEL=nomic-embed-text
+    
+    # Validation
+    ALLOWED_JURISDICTIONS=San Rafael,Mendoza
+    ```
+  </Step>
+
+  <Step title="Set PYTHONPATH and run the API">
+    ```bash
+    cd backend
+    
+    # Set Python path
+    export PYTHONPATH=$(pwd)/src
+    
+    # Run the API server
+    uvicorn presentation.api.main:app --reload --host 0.0.0.0 --port 8000
+    ```
+    
+    The `--reload` flag enables auto-reloading on code changes.
+  </Step>
+
+  <Step title="(Optional) Run Celery worker">
+    In a separate terminal:
+    
+    ```bash
+    cd backend
+    export PYTHONPATH=$(pwd)/src
+    source venv/bin/activate
+    
+    # Start Celery worker
+    celery -A infrastructure.tasks.celery_app.app worker -l info
+    ```
+    
+    <Note>
+      The Celery worker is needed for asynchronous tasks like document processing and OCR.
+    </Note>
+  </Step>
+</Steps>
+
+## Database Setup
+
+### Creating the pgvector Extension
+
+The platform uses PostgreSQL's **pgvector** extension for vector similarity search. This is essential for semantic search in the legal knowledge base.
+
+<CodeGroup>
+```bash Docker
+# The extension is automatically available in the ankane/pgvector image
+# No manual installation needed
+```
+
+```bash Local PostgreSQL
+# Connect to your database
+psql def_civil
+
+# Create the extension
+CREATE EXTENSION vector;
+
+# Verify installation
+\dx vector
+```
+</CodeGroup>
+
+### Database Migrations
+
+The application uses SQLAlchemy for ORM. Tables are created automatically on first run.
+
+To manually initialize the database:
+
+```python
+from infrastructure.database.connection import engine
+from domain.models import Base
+
+# Create all tables
+Base.metadata.create_all(bind=engine)
+```
+
+## Verification and Testing
+
+### Health Check
+
+```bash
+curl http://localhost:8000/health/
+```
+
+Expected response:
+```json
+{"status": "ok"}
+```
+
+### API Documentation
+
+Access the interactive Swagger documentation:
+```
+http://localhost:8000/docs
+```
+
+### Running Tests
+
+```bash
+cd backend
+
+# Unit tests
+pytest tests/unit -v
+
+# Integration tests (requires test database)
+createdb def_civil_test
+pytest tests/integration -v
+
+# All tests with coverage
+pytest tests --cov=src --cov-report=html
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="PostgreSQL connection refused">
+    **Symptoms**: `psycopg2.OperationalError: could not connect to server`
+    
+    **Solutions**:
+    1. Verify PostgreSQL is running:
+       ```bash
+       # macOS
+       brew services list | grep postgresql
+       
+       # Linux
+       sudo systemctl status postgresql
+       ```
+    
+    2. Check if PostgreSQL is listening on the correct port:
+       ```bash
+       sudo netstat -plnt | grep 5432
+       ```
+    
+    3. Verify connection settings in `.env`:
+       ```env
+       DATABASE_URL=postgresql+psycopg2://USER:PASSWORD@HOST:PORT/DATABASE
+       ```
+  </Accordion>
+  
+  <Accordion title="pgvector extension not found">
+    **Symptoms**: `ERROR: extension "vector" is not available`
+    
+    **Solutions**:
+    1. Install pgvector:
+       ```bash
+       # macOS
+       brew install pgvector
+       
+       # Ubuntu/Debian
+       sudo apt-get install postgresql-14-pgvector
+       ```
+    
+    2. Restart PostgreSQL:
+       ```bash
+       # macOS
+       brew services restart postgresql@14
+       
+       # Linux
+       sudo systemctl restart postgresql
+       ```
+    
+    3. Create the extension:
+       ```bash
+       psql def_civil -c "CREATE EXTENSION vector;"
+       ```
+  </Accordion>
+  
+  <Accordion title="Python module import errors">
+    **Symptoms**: `ModuleNotFoundError: No module named 'presentation'`
+    
+    **Solution**: Ensure `PYTHONPATH` is set correctly:
+    ```bash
+    export PYTHONPATH=$(pwd)/src
+    echo $PYTHONPATH  # Should show: /path/to/backend/src
+    ```
+    
+    You can also add this to your shell profile (~/.bashrc, ~/.zshrc):
+    ```bash
+    export PYTHONPATH="/path/to/def-civil-divorcios/backend/src:$PYTHONPATH"
+    ```
+  </Accordion>
+  
+  <Accordion title="Docker build fails on corporate network">
+    **Symptoms**: SSL certificate errors during `docker compose build`
+    
+    **Solution**: The Dockerfile includes corporate certificate handling. Place your certificate at:
+    ```
+    backend/certs/fortinet_corporate_root.crt
+    ```
+    
+    Or remove these lines from the Dockerfile if not on a corporate network:
+    ```dockerfile
+    COPY certs/fortinet_corporate_root.crt /usr/local/share/ca-certificates/
+    ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    ```
+  </Accordion>
+  
+  <Accordion title="Celery worker not processing tasks">
+    **Symptoms**: Tasks appear to be queued but never execute
+    
+    **Solutions**:
+    1. Verify Redis is running:
+       ```bash
+       redis-cli ping  # Should return PONG
+       ```
+    
+    2. Check Celery worker logs:
+       ```bash
+       docker compose logs worker  # Docker
+       # or check terminal output for local worker
+       ```
+    
+    3. Verify `REDIS_URL` in `.env` is correct
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure LLM providers, WhatsApp integration, and environment settings
+  </Card>
+  
+  <Card title="Development Guide" icon="code" href="/development/setup">
+    Learn about the codebase structure and development workflow
+  </Card>
+  
+  <Card title="Testing" icon="flask" href="/development/testing">
+    Write and run tests for the platform
+  </Card>
+  
+  <Card title="Deployment" icon="rocket" href="/deployment/production">
+    Deploy to production environments
+  </Card>
+</CardGroup>

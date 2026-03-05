@@ -1,0 +1,519 @@
+---
+title: "Validation Rules"
+description: "Learn how to create custom validation rules for user input"
+---
+
+The platform uses a validation service architecture to ensure data quality and provide helpful feedback to users. Validators follow a consistent interface and return structured results with error messages and normalized data.
+
+## Validation Architecture
+
+Validation services follow the **Strategy Pattern** with three components:
+
+1. **ValidationService Interface**: Abstract base class defining the validation contract
+2. **ValidationResult DTOs**: Structured response objects with validation status and errors
+3. **Concrete Validators**: Implementations for specific data types (addresses, dates, etc.)
+
+```
+┌──────────────────────┐
+│  Use Case / Phase    │  ← Calls validator
+└──────────┬───────────┘
+           │
+    ┌──────▼──────────────────┐
+    │ ValidationService       │  ← Interface
+    └──────┬──────────────────┘
+           │
+    ┌──────▼────────┬──────────────┬─────────────┐
+    │  Address      │   Date       │   Custom    │
+    │  Validator    │   Validator  │   Validator │
+    └───────────────┴──────────────┴─────────────┘
+```
+
+## ValidationResult DTOs
+
+All validators return structured result objects:
+
+```python
+# application/dtos/validation_results.py
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Any
+
+@dataclass
+class AddressValidationResult:
+    is_valid: bool
+    errors: List[str] = field(default_factory=list)
+    normalized_address: Optional[str] = None
+    components: Optional[Dict[str, Any]] = None
+
+@dataclass
+class DateValidationResult:
+    is_valid: bool
+    errors: List[str] = field(default_factory=list)
+    normalized_date: Optional[str] = None
+    age_years: Optional[int] = None
+
+@dataclass
+class ResponseValidationResult:
+    is_valid: bool
+    errors: List[str] = field(default_factory=list)
+    flags: List[str] = field(default_factory=list)
+```
+
+**Key fields:**
+- `is_valid`: Boolean indicating if input passed validation
+- `errors`: List of human-readable error messages
+- `normalized_*`: Cleaned/standardized version of the input
+- Additional fields for metadata (age, components, flags, etc.)
+
+## Creating a Validation Service
+
+### 1. Define the interface
+
+```python
+# application/interfaces/validation/email_validation_service.py
+
+from abc import ABC, abstractmethod
+from application.dtos.validation_results import EmailValidationResult
+
+class EmailValidationService(ABC):
+    @abstractmethod
+    def validate_email(self, email: str) -> EmailValidationResult:
+        """
+        Validates an email address.
+        
+        Args:
+            email: Email address to validate
+        
+        Returns:
+            EmailValidationResult with validation status and normalized email
+        """
+        raise NotImplementedError
+```
+
+### 2. Define the result DTO
+
+```python
+# application/dtos/validation_results.py (add to existing file)
+
+@dataclass
+class EmailValidationResult:
+    is_valid: bool
+    errors: List[str] = field(default_factory=list)
+    normalized_email: Optional[str] = None
+    provider: Optional[str] = None  # gmail, outlook, etc.
+```
+
+### 3. Implement the validator
+
+```python
+# infrastructure/validation/email_validation_service_impl.py
+
+import re
+from application.interfaces.validation.email_validation_service import EmailValidationService
+from application.dtos.validation_results import EmailValidationResult
+
+class SimpleEmailValidationService(EmailValidationService):
+    # RFC 5322 simplified email regex
+    EMAIL_REGEX = re.compile(
+        r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    )
+    
+    # Common typos in domains
+    DOMAIN_CORRECTIONS = {
+        'gmial.com': 'gmail.com',
+        'gmai.com': 'gmail.com',
+        'hotmial.com': 'hotmail.com',
+        'yahooo.com': 'yahoo.com',
+    }
+    
+    def validate_email(self, email: str) -> EmailValidationResult:
+        """
+        Validates email format and suggests corrections for common typos.
+        """
+        if not email or not isinstance(email, str):
+            return EmailValidationResult(
+                is_valid=False,
+                errors=["Email vacío o inválido"]
+            )
+        
+        # Clean input
+        email_clean = email.strip().lower()
+        
+        errors = []
+        
+        # Check basic format
+        if not self.EMAIL_REGEX.match(email_clean):
+            errors.append("Formato de email inválido. Ejemplo: usuario@gmail.com")
+            return EmailValidationResult(is_valid=False, errors=errors)
+        
+        # Extract domain
+        local, domain = email_clean.split('@')
+        
+        # Check for common typos and suggest corrections
+        if domain in self.DOMAIN_CORRECTIONS:
+            suggested = f"{local}@{self.DOMAIN_CORRECTIONS[domain]}"
+            errors.append(
+                f"¿Quisiste decir '{suggested}'? El dominio '{domain}' parece incorrecto."
+            )
+            return EmailValidationResult(is_valid=False, errors=errors)
+        
+        # Check for suspicious patterns
+        if local.startswith('.') or local.endswith('.'):
+            errors.append("El email no puede empezar ni terminar con punto")
+        
+        if '..' in local:
+            errors.append("El email no puede contener puntos consecutivos")
+        
+        if errors:
+            return EmailValidationResult(is_valid=False, errors=errors)
+        
+        # Extract provider for metadata
+        provider = self._extract_provider(domain)
+        
+        # Valid email
+        return EmailValidationResult(
+            is_valid=True,
+            normalized_email=email_clean,
+            provider=provider
+        )
+    
+    def _extract_provider(self, domain: str) -> str:
+        """
+        Extract email provider from domain.
+        """
+        common_providers = {
+            'gmail.com': 'gmail',
+            'hotmail.com': 'hotmail',
+            'outlook.com': 'outlook',
+            'yahoo.com': 'yahoo',
+            'icloud.com': 'icloud',
+        }
+        return common_providers.get(domain, 'other')
+```
+
+## Integration with Conversation Flow
+
+Validators are used in phase handlers to validate user input:
+
+```python
+# In process_incoming_message.py
+
+class ProcessIncomingMessageUseCase:
+    def __init__(self, db: Session):
+        # ... other services ...
+        self.validator_email = SimpleEmailValidationService()
+    
+    async def _phase_email(self, case, text: str) -> str:
+        """
+        Phase: collect and validate email address
+        """
+        # Validate using the service
+        result = self.validator_email.validate_email(text)
+        
+        if not result.is_valid:
+            # Show errors to user, stay in same phase
+            errors = "\n- ".join(result.errors)
+            return f"El email no es válido:\n- {errors}\n\nIngresá tu email de contacto."
+        
+        # Valid email - save normalized version and transition
+        case.email = result.normalized_email
+        case.phase = "domicilio"
+        self.cases.update(case)
+        
+        return f"✅ Email registrado: {result.normalized_email}\n\n¿Cuál es tu domicilio actual?"
+```
+
+## Existing Validators
+
+### Address Validator
+
+```python
+# Example usage
+result = self.validator_addr.validate_address(
+    "San Martín 123, San Rafael, Mendoza",
+    is_marital_address=True  # Check jurisdiction for marital addresses
+)
+
+if result.is_valid:
+    # result.normalized_address: "San Martín 123, San Rafael, Mendoza"
+    # result.components: {"street": "San Martín", "number": "123", ...}
+    pass
+```
+
+**Features:**
+- Extracts street, number, city, province
+- Normalizes format for consistency
+- Validates jurisdiction for marital addresses
+- Flexible input (accepts "Ciudad, Provincia" or "Ciudad Provincia")
+
+### Date Validator
+
+```python
+# Example usage
+result = self.validator_date.validate_birth_date("15/03/1990")
+
+if result.is_valid:
+    # result.normalized_date: "15/03/1990"
+    # result.age_years: 34
+    pass
+```
+
+**Features:**
+- Validates date format (DD/MM/YYYY)
+- Checks for future dates
+- Validates age requirements (18+ for birth dates)
+- Calculates age from date
+- Validates logical constraints (marriage after birth, etc.)
+
+## Advanced Validation Patterns
+
+### Conditional Validation
+
+Validate based on other case fields:
+
+```python
+def validate_child_age(self, birth_date: str, has_cud: bool) -> DateValidationResult:
+    """
+    Children are included if: (a) under 18, (b) 18-25 and studying,
+    or (c) any age with CUD.
+    """
+    result = self.validate_birth_date(birth_date)
+    
+    if not result.is_valid:
+        return result
+    
+    age = result.age_years
+    
+    # Under 18 always valid
+    if age < 18:
+        return result
+    
+    # Over 25 only valid with CUD
+    if age > 25 and not has_cud:
+        result.is_valid = False
+        result.errors.append(
+            "Hijos mayores de 25 años solo se incluyen si tienen CUD vigente"
+        )
+        return result
+    
+    # 18-25 requires additional info (studying status)
+    # Return valid but flag for follow-up question
+    return result
+```
+
+### Multi-Field Validation
+
+Validate relationships between multiple fields:
+
+```python
+class MarriageValidationService:
+    def validate_marriage(
+        self,
+        marriage_date: str,
+        solicitante_birth: str,
+        conyuge_birth: str
+    ) -> DateValidationResult:
+        """
+        Validates marriage date against both birth dates.
+        """
+        m_date = self._parse_date(marriage_date)
+        s_birth = self._parse_date(solicitante_birth)
+        c_birth = self._parse_date(conyuge_birth)
+        
+        errors = []
+        
+        # Marriage must be after both births
+        if m_date <= s_birth or m_date <= c_birth:
+            errors.append(
+                "La fecha de matrimonio debe ser posterior a las fechas de nacimiento"
+            )
+        
+        # Both must be 18+ at marriage
+        s_age_at_marriage = self._calculate_age(s_birth, m_date)
+        c_age_at_marriage = self._calculate_age(c_birth, m_date)
+        
+        if s_age_at_marriage < 18:
+            errors.append("El solicitante debe tener al menos 18 años al casarse")
+        
+        if c_age_at_marriage < 18:
+            errors.append("El cónyuge debe tener al menos 18 años al casarse")
+        
+        return DateValidationResult(
+            is_valid=len(errors) == 0,
+            errors=errors,
+            normalized_date=marriage_date if not errors else None
+        )
+```
+
+### External API Validation
+
+Integrate with external services:
+
+```python
+import httpx
+
+class RENAPERValidationService:
+    """
+    Validates DNI against RENAPER (Argentine national ID registry).
+    """
+    async def validate_dni(self, dni: str, nombre: str, apellido: str) -> DNIValidationResult:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(
+                    f"https://api.renaper.gob.ar/v1/verify",
+                    params={"dni": dni, "nombre": nombre, "apellido": apellido}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return DNIValidationResult(
+                        is_valid=data["valid"],
+                        errors=[] if data["valid"] else ["DNI no coincide con RENAPER"],
+                        verified=True
+                    )
+        except Exception as e:
+            # If API fails, allow validation to proceed (don't block user)
+            return DNIValidationResult(
+                is_valid=True,
+                errors=[],
+                verified=False,
+                warning="No se pudo verificar con RENAPER (servicio no disponible)"
+            )
+```
+
+## Testing Validators
+
+### Unit Tests
+
+```python
+# tests/unit/test_email_validator.py
+
+import pytest
+from infrastructure.validation.email_validation_service_impl import SimpleEmailValidationService
+
+def test_valid_email():
+    validator = SimpleEmailValidationService()
+    result = validator.validate_email("usuario@gmail.com")
+    
+    assert result.is_valid is True
+    assert len(result.errors) == 0
+    assert result.normalized_email == "usuario@gmail.com"
+    assert result.provider == "gmail"
+
+def test_invalid_email_format():
+    validator = SimpleEmailValidationService()
+    result = validator.validate_email("invalid-email")
+    
+    assert result.is_valid is False
+    assert len(result.errors) > 0
+    assert "Formato de email inválido" in result.errors[0]
+
+def test_email_typo_correction():
+    validator = SimpleEmailValidationService()
+    result = validator.validate_email("usuario@gmial.com")  # Typo: gmial
+    
+    assert result.is_valid is False
+    assert "gmail.com" in result.errors[0]  # Should suggest correction
+
+def test_email_normalization():
+    validator = SimpleEmailValidationService()
+    result = validator.validate_email("  Usuario@Gmail.COM  ")  # Whitespace, uppercase
+    
+    assert result.is_valid is True
+    assert result.normalized_email == "usuario@gmail.com"  # Lowercase, trimmed
+
+def test_edge_cases():
+    validator = SimpleEmailValidationService()
+    
+    # Empty string
+    assert validator.validate_email("").is_valid is False
+    
+    # None
+    assert validator.validate_email(None).is_valid is False
+    
+    # Consecutive dots
+    assert validator.validate_email("user..name@gmail.com").is_valid is False
+    
+    # Starting with dot
+    assert validator.validate_email(".user@gmail.com").is_valid is False
+```
+
+### Integration Tests
+
+```python
+# tests/integration/test_validation_flow.py
+
+import pytest
+from application.use_cases.process_incoming_message import ProcessIncomingMessageUseCase
+
+@pytest.mark.asyncio
+async def test_email_phase_with_invalid_input(db_session):
+    """Test that invalid email keeps user in email phase"""
+    use_case = ProcessIncomingMessageUseCase(db_session)
+    
+    # Create case in email phase
+    case = use_case.cases.create(phone="123", phase="email")
+    
+    # Send invalid email
+    response = await use_case._phase_email(case, "invalid-email")
+    
+    # Should stay in same phase
+    assert case.phase == "email"
+    assert "inválido" in response.lower()
+
+@pytest.mark.asyncio
+async def test_email_phase_with_valid_input(db_session):
+    """Test that valid email transitions to next phase"""
+    use_case = ProcessIncomingMessageUseCase(db_session)
+    
+    case = use_case.cases.create(phone="123", phase="email")
+    
+    # Send valid email
+    response = await use_case._phase_email(case, "test@gmail.com")
+    
+    # Should transition to domicilio
+    assert case.phase == "domicilio"
+    assert case.email == "test@gmail.com"
+    assert "domicilio" in response.lower()
+```
+
+## Best Practices
+
+<Tip>
+  Return helpful, actionable error messages. Include examples of valid input formats in error messages.
+</Tip>
+
+<Warning>
+  Never block the user flow if an external validation API fails. Degrade gracefully by allowing the validation to proceed with a warning.
+</Warning>
+
+### Error Messages
+
+- Use Argentine Spanish ("vos" form)
+- Include examples of correct format
+- Be specific about what's wrong
+- Suggest corrections for common typos
+
+### Normalization
+
+- Always store normalized data (lowercase, trimmed)
+- Maintain consistent formatting across the system
+- Preserve original input in logs for debugging
+
+### Performance
+
+- Keep validators fast (< 100ms for simple validation)
+- Cache results of expensive validations
+- Use async for external API calls
+- Set reasonable timeouts for API requests
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Custom Phases" icon="route" href="/development/custom-phases">
+    Learn how to add validation to custom phases
+  </Card>
+  <Card title="Data Models" icon="database" href="/concepts/clean-architecture">
+    Understand the data model structure
+  </Card>
+</CardGroup>

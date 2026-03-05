@@ -1,0 +1,666 @@
+---
+title: Testing Guide
+description: Comprehensive testing strategies, tools, and examples for the Defensoría Civil platform
+---
+
+## Testing Philosophy
+
+Our testing strategy follows the **Test Pyramid** principle:
+
+1. **Unit Tests (70%)** - Fast, isolated tests for individual components
+2. **Integration Tests (20%)** - Tests for component interactions
+3. **End-to-End Tests (10%)** - Full system tests
+
+All tests are written using **pytest** with async support via **pytest-asyncio**.
+
+## Test Structure
+
+Tests are organized in `backend/tests/` with the following structure:
+
+```
+backend/tests/
+├── conftest.py           # Shared fixtures
+├── unit/                 # Unit tests
+│   ├── test_llm_router.py
+│   ├── test_image_processing.py
+│   ├── test_date_validation_service.py
+│   └── test_address_validation_service.py
+├── integration/          # Integration tests
+│   ├── conftest.py
+│   ├── test_conversation_flow.py
+│   ├── test_auth_integration.py
+│   └── test_webhook_integration.py
+├── security/             # Security tests
+│   ├── test_safety_layer.py
+│   └── test_red_teaming.py
+└── evaluation/           # Agent quality tests
+    └── test_agent_quality.py
+```
+
+## Test Configuration
+
+### pytest.ini
+
+Our pytest configuration (`backend/pytest.ini`):
+
+```ini
+[pytest]
+pythonpath = src
+testpaths = tests
+
+addopts =
+    -v
+    --strict-markers
+    --tb=short
+    --disable-warnings
+
+# Async support
+asyncio_mode = auto
+asyncio_default_fixture_loop_scope = function
+```
+
+### Test Markers
+
+We use pytest markers to categorize tests:
+
+| Marker | Description | Usage |
+|--------|-------------|-------|
+| `@pytest.mark.unit` | Fast unit tests | `pytest -m unit` |
+| `@pytest.mark.integration` | Integration tests (slow) | `pytest -m integration` |
+| `@pytest.mark.e2e` | End-to-end tests (very slow) | `pytest -m e2e` |
+| `@pytest.mark.requires_db` | Requires database | Skipped if DB unavailable |
+| `@pytest.mark.requires_api_key` | Requires API keys | Skipped if keys missing |
+| `@pytest.mark.slow` | Long-running tests | `pytest -m "not slow"` |
+
+## Running Tests
+
+### Basic Commands
+
+```bash
+# Run all tests
+pytest backend/tests -v
+
+# Run only unit tests (fast)
+pytest backend/tests/unit -v
+
+# Run specific test file
+pytest backend/tests/unit/test_llm_router.py -v
+
+# Run specific test function
+pytest backend/tests/unit/test_llm_router.py::test_chat_uses_correct_model_for_task_type -v
+
+# Run tests matching a pattern
+pytest backend/tests -k "validation" -v
+```
+
+### Test Selection
+
+```bash
+# Run only unit tests
+pytest -m unit
+
+# Run integration tests
+pytest -m integration
+
+# Skip slow tests
+pytest -m "not slow"
+
+# Run tests requiring database
+pytest -m requires_db
+
+# Combine markers
+pytest -m "unit and not slow"
+```
+
+### Test Output
+
+```bash
+# Verbose output
+pytest -v
+
+# Show print statements
+pytest -s
+
+# Show local variables on failure
+pytest -l
+
+# Stop on first failure
+pytest -x
+
+# Show slowest tests
+pytest --durations=10
+```
+
+## Test Database Setup
+
+Tests use a separate test database to avoid polluting development data.
+
+### Automatic Test Database
+
+The `conftest.py` automatically manages test databases:
+
+```python
+def get_test_database_url():
+    """
+    Priority:
+    1. TEST_DATABASE_URL environment variable
+    2. PostgreSQL local: def_civil_test
+    3. SQLite in-memory (fallback)
+    """
+    test_db_url = os.getenv("TEST_DATABASE_URL")
+    if test_db_url:
+        return test_db_url
+    
+    # Try PostgreSQL
+    postgres_url = "postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil_test"
+    try:
+        engine = create_engine(postgres_url)
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return postgres_url
+    except Exception:
+        # Fallback to SQLite
+        return "sqlite:///:memory:"
+```
+
+### Manual Test Database Setup
+
+For integration tests requiring PostgreSQL:
+
+```bash
+# Create test database
+createdb def_civil_test
+
+# Enable pgvector extension
+psql def_civil_test -c "CREATE EXTENSION vector;"
+
+# Set environment variable (optional)
+export TEST_DATABASE_URL="postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil_test"
+```
+
+## Test Fixtures
+
+### Database Fixtures
+
+Defined in `tests/conftest.py`:
+
+```python
+@pytest.fixture(scope="session")
+def test_engine(test_database_url):
+    """Engine for entire test session"""
+    engine = create_engine(test_database_url, pool_pre_ping=True)
+    return engine
+
+@pytest.fixture(scope="function")
+def db_session(test_engine):
+    """Fresh database session for each test"""
+    Base.metadata.create_all(bind=test_engine)
+    
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+    session = SessionLocal()
+    
+    yield session
+    
+    # Cleanup
+    session.rollback()
+    session.close()
+    Base.metadata.drop_all(bind=test_engine)
+```
+
+### Data Fixtures
+
+```python
+@pytest.fixture
+def test_user_data():
+    """Sample user data"""
+    return {
+        "username": "testuser",
+        "email": "test@example.com",
+        "password": "testpass123",
+        "full_name": "Test User",
+        "role": "operator",
+    }
+
+@pytest.fixture
+def sample_case_data():
+    """Sample divorce case data"""
+    return {
+        "phone": "+5492604123456",
+        "type": "unilateral",
+        "full_name": "Juan Pérez",
+        "dni": "12345678",
+        "birth_date": "15/05/1985",
+        "domicilio": "San Martín 123, San Rafael, Mendoza",
+    }
+```
+
+## Unit Tests
+
+Unit tests focus on individual components in isolation.
+
+### Example: LLM Router Test
+
+From `tests/unit/test_llm_router.py`:
+
+```python
+import pytest
+from unittest.mock import AsyncMock, patch
+from infrastructure.ai.router import LLMRouter
+
+@pytest.fixture
+def router(mock_settings):
+    """Router with mocked dependencies"""
+    with patch('infrastructure.ai.router.OllamaCloudClient'), \
+         patch('infrastructure.ai.router.OllamaClient'), \
+         patch('infrastructure.ai.router.GeminiClient'):
+        return LLMRouter()
+
+@pytest.mark.asyncio
+async def test_chat_uses_correct_model_for_task_type(router):
+    """Verify router selects correct model based on task_type"""
+    messages = [{"role": "user", "content": "Test"}]
+    
+    # Mock provider
+    router.providers['ollama_cloud'].chat = AsyncMock(return_value="Response")
+    
+    # Test chat task
+    await router.chat(messages, task_type='chat')
+    call_kwargs = router.providers['ollama_cloud'].chat.call_args[1]
+    assert call_kwargs['model'] == "minimax-m2:cloud"
+    
+    # Reset and test hallucination check
+    router.providers['ollama_cloud'].chat.reset_mock()
+    await router.chat(messages, task_type='hallucination_check')
+    call_kwargs = router.providers['ollama_cloud'].chat.call_args[1]
+    assert call_kwargs['model'] == "glm-4.6:cloud"
+```
+
+### Example: Validation Service Test
+
+From `tests/unit/test_date_validation_service.py`:
+
+```python
+import pytest
+from infrastructure.validation.date_validation_service_impl import SimpleDateValidationService
+
+def test_valid_birth_date():
+    """Test valid birth date passes validation"""
+    service = SimpleDateValidationService()
+    result = service.validate_birth_date("15/05/1985")
+    
+    assert result.is_valid
+    assert result.parsed_date is not None
+    assert result.error_message is None
+
+def test_underage_birth_date():
+    """Test birth date under 18 years fails"""
+    service = SimpleDateValidationService()
+    result = service.validate_birth_date("01/01/2010")
+    
+    assert not result.is_valid
+    assert "18 años" in result.error_message
+```
+
+## Integration Tests
+
+Integration tests verify interactions between components.
+
+### Example: Complete Conversation Flow
+
+From `tests/integration/test_conversation_flow.py`:
+
+```python
+import pytest
+from application.use_cases.process_incoming_message import (
+    ProcessIncomingMessageUseCase,
+    IncomingMessageRequest,
+)
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_complete_divorce_flow_unilateral(test_db):
+    """Test complete unilateral divorce flow"""
+    use_case = ProcessIncomingMessageUseCase(test_db)
+    phone = "+5492604123456"
+    
+    # 1. Start conversation
+    response = await use_case.execute(
+        IncomingMessageRequest(phone=phone, text="Hola")
+    )
+    assert "tipo de divorcio" in response.text.lower()
+    
+    # 2. Choose divorce type
+    response = await use_case.execute(
+        IncomingMessageRequest(phone=phone, text="unilateral")
+    )
+    assert "apellido" in response.text.lower()
+    
+    # 3. Provide surname
+    response = await use_case.execute(
+        IncomingMessageRequest(phone=phone, text="Pérez")
+    )
+    assert "nombres" in response.text.lower()
+    
+    # 4. Provide names
+    response = await use_case.execute(
+        IncomingMessageRequest(phone=phone, text="Juan Carlos")
+    )
+    assert "cuit" in response.text.lower()
+    
+    # ... continue through full flow
+```
+
+### Example: Database Persistence Test
+
+```python
+@pytest.mark.integration
+@pytest.mark.requires_db
+@pytest.mark.asyncio
+async def test_context_memory_persistence(test_db):
+    """Verify context persists between messages"""
+    from infrastructure.persistence.repositories import CaseRepository
+    from application.services.memory_service import MemoryService
+    
+    use_case = ProcessIncomingMessageUseCase(test_db)
+    phone = "+5492604123461"
+    
+    # Complete personal data collection
+    await use_case.execute(IncomingMessageRequest(phone=phone, text="Hola"))
+    await use_case.execute(IncomingMessageRequest(phone=phone, text="unilateral"))
+    await use_case.execute(IncomingMessageRequest(phone=phone, text="Sánchez"))
+    # ... more steps
+    
+    # Verify data persisted in database
+    cases_repo = CaseRepository(test_db)
+    case = cases_repo.get_or_create_by_phone(phone)
+    
+    memory = MemoryService(test_db)
+    session_data = await memory.retrieve_session_data(case.id)
+    
+    assert session_data.get("nombre") is not None
+    assert session_data.get("dni") == "99887766"
+```
+
+## Mocking Strategies
+
+### Mock External APIs
+
+Use `unittest.mock` for external dependencies:
+
+```python
+from unittest.mock import AsyncMock, patch
+
+@pytest.mark.asyncio
+async def test_llm_fallback_to_gemini(router):
+    """Test fallback to Gemini when Ollama fails"""
+    messages = [{"role": "user", "content": "Test"}]
+    
+    # Mock Ollama failure
+    router.providers['ollama_cloud'].chat = AsyncMock(
+        side_effect=Exception("Cloud failed")
+    )
+    router.providers['ollama_local'].chat = AsyncMock(
+        side_effect=Exception("Local failed")
+    )
+    
+    # Mock Gemini success
+    router.providers['gemini'].chat = AsyncMock(
+        return_value="Gemini response"
+    )
+    
+    response = await router.chat(messages)
+    
+    assert response == "Gemini response"
+    assert router.providers['gemini'].chat.called
+```
+
+### Mock Settings
+
+```python
+@pytest.fixture
+def mock_settings():
+    """Mock application settings"""
+    with patch('infrastructure.ai.router.settings') as mock:
+        mock.llm_chat_model = "minimax-m2:cloud"
+        mock.llm_reasoning_model = "deepseek-v3.1:671b-cloud"
+        yield mock
+```
+
+### Mock Database
+
+For pure unit tests, mock the database session:
+
+```python
+from unittest.mock import MagicMock
+
+def test_case_repository_get_by_phone():
+    """Test case repository without real database"""
+    mock_db = MagicMock()
+    mock_db.query().filter().first.return_value = None
+    
+    repo = CaseRepository(mock_db)
+    case = repo.get_or_create_by_phone("+5492604123456")
+    
+    assert mock_db.add.called
+    assert mock_db.commit.called
+```
+
+## Coverage Reports
+
+### Generate Coverage Report
+
+```bash
+# Run tests with coverage
+pytest backend/tests --cov=backend/src --cov-report=html --cov-report=term
+
+# Open HTML report
+open htmlcov/index.html
+```
+
+### Coverage Configuration
+
+In `pytest.ini`:
+
+```ini
+[coverage:run]
+source = src
+omit = 
+    */tests/*
+    */venv/*
+    */__pycache__/*
+    */migrations/*
+
+[coverage:report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise NotImplementedError
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    @abstractmethod
+```
+
+### Coverage Goals
+
+- **Overall:** > 80%
+- **Critical paths (auth, validation):** > 95%
+- **Infrastructure (adapters):** > 70%
+- **Presentation layer:** > 60%
+
+## CI/CD Integration
+
+### GitHub Actions Workflow
+
+Create `.github/workflows/test.yml`:
+
+```yaml
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: ankane/pgvector:latest
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: def_civil_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+      
+      - name: Run tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend/src
+          TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil_test
+          REDIS_URL: redis://localhost:6379/0
+        run: |
+          cd backend
+          pytest tests -v --cov=src --cov-report=xml
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./backend/coverage.xml
+```
+
+## Test Best Practices
+
+### 1. Test Naming
+
+Use descriptive names that explain what is being tested:
+
+```python
+# Good
+def test_chat_fallback_to_local_on_cloud_failure():
+    ...
+
+# Bad
+def test_chat_1():
+    ...
+```
+
+### 2. Arrange-Act-Assert Pattern
+
+```python
+def test_validation_rejects_invalid_date():
+    # Arrange
+    service = SimpleDateValidationService()
+    invalid_date = "01/01/2010"
+    
+    # Act
+    result = service.validate_birth_date(invalid_date)
+    
+    # Assert
+    assert not result.is_valid
+    assert "18 años" in result.error_message
+```
+
+### 3. Test One Thing
+
+Each test should verify one behavior:
+
+```python
+# Good - tests one scenario
+def test_router_uses_chat_model_for_chat_task():
+    ...
+
+def test_router_uses_reasoning_model_for_reasoning_task():
+    ...
+
+# Bad - tests multiple scenarios
+def test_router_model_selection():
+    # tests chat model
+    # tests reasoning model
+    # tests vision model
+    ...
+```
+
+### 4. Use Fixtures for Setup
+
+Avoid repetitive setup code:
+
+```python
+# Good
+@pytest.fixture
+def router():
+    return LLMRouter()
+
+def test_chat(router):
+    ...
+
+def test_embed(router):
+    ...
+```
+
+### 5. Clean Up Resources
+
+Always clean up in fixtures:
+
+```python
+@pytest.fixture
+def db_session(test_engine):
+    session = SessionLocal()
+    yield session
+    session.rollback()  # Clean up
+    session.close()
+```
+
+## Debugging Tests
+
+### Run Single Test with Print Statements
+
+```bash
+pytest backend/tests/unit/test_llm_router.py::test_chat_uses_correct_model -s -v
+```
+
+### Use Debugger
+
+```python
+import pytest
+
+def test_something():
+    result = some_function()
+    
+    # Set breakpoint
+    pytest.set_trace()
+    
+    assert result == expected
+```
+
+### Show Captured Output on Failure
+
+```bash
+pytest --tb=short --capture=no
+```
+
+## Next Steps
+
+- Review [Coding Standards](/development/coding-standards) for code quality guidelines
+- Explore [Development Setup](/development/setup) for environment configuration
+- Check [Architecture Documentation](/architecture) to understand system design

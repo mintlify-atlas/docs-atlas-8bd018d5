@@ -1,80 +1,164 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: 'Quickstart'
+description: 'Get the Defensoría Civil divorce platform running in under 5 minutes'
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This guide will help you get the Defensoría Civil divorce platform up and running using Docker in less than 5 minutes.
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+Before you begin, ensure you have the following installed:
+
+- **Docker** 20.10+ and **Docker Compose** 2.0+
+- **Git** for cloning the repository
+- A **Gemini API key** (required for LLM functionality)
+  - Get one at [Google AI Studio](https://makersuite.google.com/app/apikey)
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone <repository-url>
+    cd def-civil-divorcios
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example environment file and add your Gemini API key:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    cp .env.example .env
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    Edit `.env` and set your Gemini API key:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```env
+    GEMINI_API_KEY=your_api_key_here
+    ```
+    
+    <Note>
+      The `.env.example` file contains sensible defaults for local development. The only **required** change is adding your `GEMINI_API_KEY`.
+    </Note>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Start the services">
+    Build and start all services using Docker Compose:
+    
+    ```bash
+    docker compose up --build
+    ```
+    
+    This will start:
+    - **API Backend** (port 8000)
+    - **Celery Worker** (background tasks)
+    - **PostgreSQL** with pgvector extension (port 5433)
+    - **Redis** (port 7379)
+    - **Dashboard** (port 5173)
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Verify the installation">
+    Check that the API is running:
+    
+    ```bash
+    curl http://localhost:8000/health/
+    ```
+    
+    Expected response:
+    ```json
+    {"status": "ok"}
+    ```
+    
+    You can also access:
+    - **API Documentation**: http://localhost:8000/docs
+    - **Dashboard**: http://localhost:5173
+  </Step>
+</Steps>
 
-### Step 3: Go live
+## What's Running?
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+After running `docker compose up`, you'll have the following services available:
 
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+| Service | Port | URL | Description |
+|---------|------|-----|-------------|
+| API Backend | 8000 | http://localhost:8000 | FastAPI REST API |
+| Swagger Docs | 8000 | http://localhost:8000/docs | Interactive API documentation |
+| Dashboard | 5173 | http://localhost:5173 | Frontend interface |
+| PostgreSQL | 5433 | localhost:5433 | Database with pgvector |
+| Redis | 7379 | localhost:7379 | Cache and task queue |
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Note that PostgreSQL runs on port **5433** (not the standard 5432) and Redis runs on port **7379** (not the standard 6379) to avoid conflicts with local installations.
 </Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Learn about all available configuration options, LLM providers, and WhatsApp integration
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the Clean Architecture structure and design principles
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore all available API endpoints
+  </Card>
+  
+  <Card title="WhatsApp Integration" icon="message" href="/user-guide/whatsapp-flow">
+    Set up the WhatsApp bot for legal assistance
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port already in use">
+    If you see errors about ports already being in use, you can either:
+    
+    1. Stop the conflicting service
+    2. Change the ports in `docker-compose.yml`
+    
+    For example, to change the API port from 8000 to 8080:
+    ```yaml
+    api:
+      ports:
+        - "8080:8000"  # host:container
+    ```
+  </Accordion>
+  
+  <Accordion title="Database connection errors">
+    If the API can't connect to the database:
+    
+    1. Ensure all services are running: `docker compose ps`
+    2. Check the database logs: `docker compose logs db`
+    3. Verify the `DATABASE_URL` in `.env` matches the docker-compose configuration
+  </Accordion>
+  
+  <Accordion title="LLM API errors">
+    If you see errors related to the LLM:
+    
+    1. Verify your `GEMINI_API_KEY` is set correctly in `.env`
+    2. Check API quota at [Google AI Studio](https://makersuite.google.com/app/apikey)
+    3. Ensure you have network connectivity to Google's API
+  </Accordion>
+</AccordionGroup>
+
+## Stopping the Services
+
+To stop all services:
+
+```bash
+# Stop and remove containers
+docker compose down
+
+# Stop and remove containers AND volumes (deletes all data)
+docker compose down -v
+```
+
+<Warning>
+  Using `docker compose down -v` will delete all database data. Only use this if you want to start completely fresh.
+</Warning>

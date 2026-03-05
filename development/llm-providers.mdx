@@ -1,0 +1,473 @@
+---
+title: "LLM Providers"
+description: "Learn how to integrate new LLM providers into the platform"
+---
+
+The platform uses a provider abstraction layer with automatic fallback between multiple LLM services. This enables resilience and flexibility in model selection based on task requirements.
+
+## Provider Architecture
+
+The system follows the **Strategy Pattern** with three key components:
+
+1. **LLMClient Interface**: Abstract base class defining the contract
+2. **Concrete Providers**: Implementations for specific services (Ollama, Gemini, etc.)
+3. **LLMRouter**: Intelligent router that selects providers and handles fallback
+
+```
+┌─────────────────┐
+│   LLMRouter     │  ← Selects provider based on task type
+└────────┬────────┘
+         │
+    ┌────┴─────────────────────┐
+    │                          │
+┌───▼────────────┐  ┌──────────▼────────┐
+│ OllamaClient   │  │  GeminiClient     │
+│ (Local/Cloud)  │  │  (Google)         │
+└────────────────┘  └───────────────────┘
+```
+
+## LLMClient Interface
+
+All providers must implement this interface:
+
+```python
+# application/interfaces/ai/llm_client.py
+
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional
+
+class LLMClient(ABC):
+    @abstractmethod
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        Send messages to the LLM and get a response.
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+                     Format: [{'role': 'user', 'content': 'Hello'}]
+            tools: Optional function calling tools (OpenAI format)
+        
+        Returns:
+            str: The model's text response
+        """
+        ...
+    
+    @abstractmethod
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings for a list of texts.
+        
+        Args:
+            texts: List of text strings to embed
+        
+        Returns:
+            List of embedding vectors (one per input text)
+        """
+        ...
+```
+
+## Implementing a New Provider
+
+Let's implement a provider for OpenAI as an example:
+
+### 1. Create the provider class
+
+```python
+# infrastructure/ai/openai_client.py
+
+import openai
+from typing import List, Dict, Any, Optional
+from application.interfaces.ai.llm_client import LLMClient
+from core.config import settings
+
+class OpenAIClient(LLMClient):
+    def __init__(self, model: str = "gpt-4o-mini"):
+        """
+        Initialize OpenAI client.
+        
+        Args:
+            model: Model name to use (default: gpt-4o-mini)
+        """
+        openai.api_key = settings.openai_api_key
+        self.model = model
+    
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        Send chat request to OpenAI API.
+        """
+        try:
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+            }
+            
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            
+            response = await openai.ChatCompletion.acreate(**kwargs)
+            
+            # Extract text from response
+            message = response.choices[0].message
+            
+            # Handle tool calls if present
+            if message.get("tool_calls"):
+                # Return function calling JSON
+                return message.model_dump_json()
+            
+            return message.content or ""
+            
+        except Exception as e:
+            raise Exception(f"OpenAI API error: {str(e)}")
+    
+    async def embed(self, texts: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings using OpenAI API.
+        """
+        try:
+            response = await openai.Embedding.acreate(
+                model="text-embedding-3-small",
+                input=texts
+            )
+            
+            # Extract embeddings in order
+            embeddings = [item.embedding for item in response.data]
+            return embeddings
+            
+        except Exception as e:
+            raise Exception(f"OpenAI embedding error: {str(e)}")
+```
+
+### 2. Add configuration
+
+```python
+# core/config.py
+
+class Settings(BaseSettings):
+    # ... existing settings ...
+    
+    # OpenAI settings
+    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
+    openai_chat_model: str = Field(default="gpt-4o-mini", env="OPENAI_CHAT_MODEL")
+    openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
+```
+
+```bash
+# .env file
+OPENAI_API_KEY=sk-...
+OPENAI_CHAT_MODEL=gpt-4o-mini
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+### 3. Add to LLMRouter
+
+```python
+# infrastructure/ai/router.py
+
+from .openai_client import OpenAIClient  # Add import
+
+class LLMRouter(LLMClient):
+    def __init__(self):
+        # Initialize all available providers
+        self.providers = {
+            'ollama_cloud': OllamaCloudClient(),
+            'ollama_local': OllamaClient(),
+            'gemini': GeminiClient(),
+            'openai': OpenAIClient(),  # Add new provider
+        }
+        
+        # ... model_map configuration ...
+        
+        # Update fallback order to include OpenAI
+        self.fallback_order = [
+            'ollama_cloud',  # Try Ollama Cloud first (cheapest)
+            'openai',        # Then OpenAI (reliable)
+            'ollama_local',  # Then local (if available)
+            'gemini'         # Finally Gemini (backup)
+        ]
+```
+
+### 4. Handle provider-specific parameters
+
+Some providers accept different parameters. Handle this in the router:
+
+```python
+async def chat(
+    self,
+    messages: List[Dict[str, str]],
+    tools: Optional[List[Dict[str, Any]]] = None,
+    task_type: TaskType = 'chat'
+) -> str:
+    model = self.model_map.get(task_type, settings.llm_chat_model)
+    
+    for provider_name in self.fallback_order:
+        try:
+            provider = self.providers[provider_name]
+            
+            logger.info(
+                "llm_router_attempt",
+                provider=provider_name,
+                task_type=task_type,
+                model=model
+            )
+            
+            # Provider-specific parameter handling
+            if provider_name in ['ollama_cloud', 'openai']:
+                # These providers accept model parameter
+                response = await provider.chat(messages, tools=tools, model=model)
+            else:
+                # Others use default model from initialization
+                response = await provider.chat(messages, tools=tools)
+            
+            logger.info(
+                "llm_router_success",
+                provider=provider_name,
+                task_type=task_type
+            )
+            
+            return response
+            
+        except Exception as e:
+            logger.warning(
+                "llm_router_provider_failed",
+                provider=provider_name,
+                error=str(e)
+            )
+            
+            if provider_name == self.fallback_order[-1]:
+                raise
+            
+            continue
+```
+
+## Fallback Strategy
+
+The router implements automatic fallback:
+
+1. **Primary provider fails** → Logs warning, tries next provider
+2. **Secondary provider fails** → Continues down the chain
+3. **All providers fail** → Raises exception with full context
+
+```python
+# Fallback order is configurable
+self.fallback_order = ['ollama_cloud', 'openai', 'ollama_local', 'gemini']
+
+# Embeddings use a different strategy (local-first for speed)
+embed_fallback_order = ['ollama_local']  # Fail gracefully if unavailable
+```
+
+### Graceful Degradation for Embeddings
+
+The embedding fallback returns empty lists instead of raising exceptions, allowing the system to operate without semantic search:
+
+```python
+try:
+    embeddings = await provider.embed(texts)
+    return embeddings
+except Exception as e:
+    logger.warning("embed_provider_failed", provider=provider_name, error=str(e))
+    
+    # If last provider, return empty list (graceful degradation)
+    if provider_name == embed_fallback_order[-1]:
+        logger.error("all_embed_providers_failed")
+        return []  # Allow system to work without embeddings
+```
+
+## Task-Based Model Selection
+
+The router maps task types to specific models:
+
+```python
+self.model_map = {
+    'chat': settings.llm_chat_model,              # General conversation
+    'reasoning': settings.llm_reasoning_model,     # Complex reasoning tasks
+    'hallucination_check': settings.llm_hallucination_model,  # Verification
+    'vision_ocr': settings.llm_vision_model,       # Image analysis
+    'embeddings': settings.llm_embedding_model     # Semantic search
+}
+
+# Usage in code:
+response = await self.llm.chat(messages, task_type='reasoning')
+```
+
+## Testing Providers
+
+### Unit Tests
+
+```python
+# tests/unit/test_openai_client.py
+
+import pytest
+from unittest.mock import AsyncMock, patch
+from infrastructure.ai.openai_client import OpenAIClient
+
+@pytest.mark.asyncio
+async def test_openai_chat_success():
+    """Test successful chat completion"""
+    client = OpenAIClient()
+    
+    with patch('openai.ChatCompletion.acreate') as mock_create:
+        # Mock successful response
+        mock_create.return_value = AsyncMock(
+            choices=[AsyncMock(
+                message=AsyncMock(content="Test response", tool_calls=None)
+            )]
+        )
+        
+        messages = [{"role": "user", "content": "Hello"}]
+        response = await client.chat(messages)
+        
+        assert response == "Test response"
+        mock_create.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_openai_chat_error():
+    """Test error handling"""
+    client = OpenAIClient()
+    
+    with patch('openai.ChatCompletion.acreate') as mock_create:
+        mock_create.side_effect = Exception("API error")
+        
+        messages = [{"role": "user", "content": "Hello"}]
+        
+        with pytest.raises(Exception, match="OpenAI API error"):
+            await client.chat(messages)
+
+@pytest.mark.asyncio
+async def test_openai_embeddings():
+    """Test embedding generation"""
+    client = OpenAIClient()
+    
+    with patch('openai.Embedding.acreate') as mock_create:
+        mock_create.return_value = AsyncMock(
+            data=[
+                AsyncMock(embedding=[0.1, 0.2, 0.3]),
+                AsyncMock(embedding=[0.4, 0.5, 0.6]),
+            ]
+        )
+        
+        texts = ["text 1", "text 2"]
+        embeddings = await client.embed(texts)
+        
+        assert len(embeddings) == 2
+        assert embeddings[0] == [0.1, 0.2, 0.3]
+        assert embeddings[1] == [0.4, 0.5, 0.6]
+```
+
+### Integration Tests
+
+```python
+# tests/integration/test_llm_router.py
+
+import pytest
+from infrastructure.ai.router import LLMRouter
+
+@pytest.mark.asyncio
+async def test_router_fallback():
+    """Test that router falls back to next provider on failure"""
+    router = LLMRouter()
+    
+    # Temporarily break first provider
+    original_chat = router.providers['ollama_cloud'].chat
+    router.providers['ollama_cloud'].chat = AsyncMock(side_effect=Exception("Failed"))
+    
+    try:
+        messages = [{"role": "user", "content": "Test"}]
+        response = await router.chat(messages)
+        
+        # Should succeed with fallback provider
+        assert isinstance(response, str)
+        assert len(response) > 0
+    finally:
+        # Restore original
+        router.providers['ollama_cloud'].chat = original_chat
+
+@pytest.mark.asyncio
+async def test_router_task_type_routing():
+    """Test that different task types use appropriate models"""
+    router = LLMRouter()
+    
+    messages = [{"role": "user", "content": "Explain quantum physics"}]
+    
+    # Chat task should use default model
+    response1 = await router.chat(messages, task_type='chat')
+    assert isinstance(response1, str)
+    
+    # Reasoning task should use reasoning model
+    response2 = await router.chat(messages, task_type='reasoning')
+    assert isinstance(response2, str)
+```
+
+## Configuration Examples
+
+### Development (Local Models)
+
+```bash
+# .env.development
+LLM_CHAT_MODEL=llama3.1
+LLM_REASONING_MODEL=qwen2.5-coder
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+### Production (Cloud Services)
+
+```bash
+# .env.production
+OLLAMA_CLOUD_URL=https://api.ollama.ai
+OLLAMA_CLOUD_API_KEY=your-key
+GEMINI_API_KEY=your-key
+OPENAI_API_KEY=your-key
+
+LLM_CHAT_MODEL=llama-3.3-70b-versatile
+LLM_REASONING_MODEL=llama-3.3-70b-versatile
+```
+
+## Best Practices
+
+<Tip>
+  Always handle provider failures gracefully. Use try/except blocks and log errors with context (provider name, task type, error message).
+</Tip>
+
+<Warning>
+  API keys should never be committed to the repository. Use environment variables and add them to `.env.example` as placeholders.
+</Warning>
+
+### Error Handling
+
+- Log provider failures with structured logging
+- Include error context (provider, task type, model)
+- Re-raise exceptions only after all fallbacks fail
+- Use graceful degradation for non-critical features (embeddings)
+
+### Performance
+
+- Use async/await for all provider calls
+- Prefer local models for embeddings (faster, no quotas)
+- Cache embeddings when possible
+- Monitor provider latency and adjust fallback order
+
+### Security
+
+- Store API keys in environment variables
+- Rotate keys regularly
+- Use read-only keys when available
+- Log API usage for billing tracking
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Learn about the overall system design
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure LLM models and providers
+  </Card>
+</CardGroup>

@@ -1,97 +1,178 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "Defensoría Civil - Sistema de Divorcios"
+description: "AI-powered legal assistance platform for automated divorce processing via WhatsApp"
 ---
 
-## Setting up
+<div style={{
+  background: 'linear-gradient(135deg, #94cb04 0%, #7aa003 100%)',
+  borderRadius: '8px',
+  padding: '48px 32px',
+  marginBottom: '32px',
+  color: '#ffffff'
+}}>
+  <h1 style={{
+    fontSize: '48px',
+    fontWeight: '700',
+    marginBottom: '16px',
+    color: '#ffffff'
+  }}>
+    Defensoría Civil
+  </h1>
+  <p style={{
+    fontSize: '20px',
+    fontWeight: '400',
+    marginBottom: '0',
+    color: '#ffffff',
+    opacity: 0.95
+  }}>
+    Sistema inteligente de asistencia legal para trámites de divorcio en San Rafael, Mendoza
+  </p>
+</div>
 
-Get your documentation site up and running in minutes.
+## Plataforma Legal con IA
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+Sistema completo de automatización de trámites de divorcio que combina inteligencia artificial avanzada, arquitectura limpia y experiencia conversacional vía WhatsApp para la Defensoría Civil de San Rafael, Argentina.
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Inicio Rápido" icon="rocket" href="/quickstart">
+    Levanta el sistema en minutos con Docker
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Arquitectura" icon="sitemap" href="/architecture">
+    Explora la Clean Architecture del sistema
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Documentación completa de la API REST
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Flujo WhatsApp" icon="message" href="/user-guide/whatsapp-flow">
+    Experiencia conversacional del usuario
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Características Principales
 
-Everything you need to create world-class documentation.
+<CardGroup cols={3}>
+  <Card title="Conversación Inteligente" icon="comments">
+    Bot de WhatsApp con IA que guía paso a paso el trámite de divorcio con validación automática
+  </Card>
+  <Card title="Memoria Contextual" icon="brain">
+    Sistema de 4 capas: inmediata, sesión, episódica y semántica para contexto perfecto
+  </Card>
+  <Card title="Detección de Alucinaciones" icon="shield-check">
+    Validación automática de respuestas del LLM con >99% de precisión
+  </Card>
+  <Card title="OCR Avanzado" icon="file-image">
+    Extracción inteligente de datos desde DNI y actas con Gemini Vision
+  </Card>
+  <Card title="Dashboard Operadores" icon="chart-line">
+    Panel administrativo para gestión de casos y métricas en tiempo real
+  </Card>
+  <Card title="Generación PDF" icon="file-pdf">
+    Creación automática de peticiones y documentos legales
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Stack Tecnológico
 
-## Need inspiration?
+<Tabs>
+  <Tab title="Backend">
+    - **FastAPI** - Framework asíncrono de alto rendimiento
+    - **SQLAlchemy** 2.0 - ORM con soporte async
+    - **PostgreSQL + pgvector** - Base de datos con búsqueda vectorial
+    - **Redis** - Caché, sesiones y rate limiting
+    - **Celery** - Procesamiento asíncrono de tareas
+  </Tab>
+  <Tab title="IA & ML">
+    - **Google Gemini** 1.5 Flash - LLM principal + Vision OCR
+    - **Ollama** - LLM local de fallback
+    - **text-embedding-004** - Embeddings para búsqueda semántica
+    - **ReportLab** - Generación de PDFs
+  </Tab>
+  <Tab title="Frontend">
+    - **React** 18 - UI moderna y reactiva
+    - **TypeScript** - Type safety end-to-end
+    - **TanStack Query** - Gestión de estado servidor
+    - **Tailwind CSS** - Diseño responsive
+    - **Zustand** - Estado global de aplicación
+  </Tab>
+  <Tab title="Infraestructura">
+    - **Docker** - Contenerización completa
+    - **WAHA** - WhatsApp HTTP API
+    - **structlog** - Logging estructurado
+    - **pytest** - Testing comprehensivo
+  </Tab>
+</Tabs>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Principios de Diseño
+
+El sistema está construido siguiendo **Clean Architecture** con principios SOLID:
+
+<CardGroup cols={2}>
+  <Card title="Separación de Capas" icon="layer-group">
+    Domain, Application, Infrastructure y Presentation completamente desacopladas
+  </Card>
+  <Card title="Dependency Injection" icon="plug">
+    Inversión de dependencias vía abstracciones
+  </Card>
+  <Card title="Testeable" icon="vial">
+    Tests unitarios e integración con >80% cobertura
+  </Card>
+  <Card title="Extensible" icon="puzzle-piece">
+    Fácil agregar nuevos LLM providers, fases o validaciones
+  </Card>
+</CardGroup>
+
+## Casos de Uso
+
+<Steps>
+  <Step title="Usuario inicia conversación por WhatsApp">
+    El ciudadano envía mensaje al bot de la Defensoría para iniciar trámite de divorcio
+  </Step>
+  <Step title="Recolección inteligente de datos">
+    El bot guía con validación en tiempo real: tipo divorcio, datos personales, económicos, cónyuge, hijos y bienes
+  </Step>
+  <Step title="Procesamiento de documentación">
+    OCR extrae datos de DNI y acta de matrimonio, valida contra información declarada
+  </Step>
+  <Step title="Revisión por operadores">
+    Dashboard permite a operadores revisar casos, solicitar documentos adicionales y aprobar
+  </Step>
+  <Step title="Generación de petición legal">
+    Sistema genera automáticamente PDF de demanda de divorcio lista para presentar
+  </Step>
+</Steps>
+
+## Seguridad y Validación
+
+<Note>
+El sistema implementa múltiples capas de seguridad y validación para garantizar precisión legal y protección de datos sensibles.
+</Note>
+
+- **Autenticación JWT** para operadores con roles y permisos
+- **Rate limiting** inteligente (30 req/min por IP, 100 req/min por usuario)
+- **Validación contra prompt injection** en inputs del usuario
+- **Headers de seguridad** (HSTS, CSP, X-Frame-Options)
+- **Detección de alucinaciones** del LLM con confianza >95%
+- **Validación legal específica** (edad matrimonio, jurisdicción, fechas lógicas)
+
+## Próximos Pasos
+
+<CardGroup cols={2}>
+  <Card title="Instalar" icon="download" href="/installation">
+    Requisitos y guía de instalación completa
+  </Card>
+  <Card title="Configurar" icon="gear" href="/configuration">
+    Variables de entorno y configuración
+  </Card>
+  <Card title="Desarrollar" icon="code" href="/development/setup">
+    Setup de entorno de desarrollo local
+  </Card>
+  <Card title="Extender" icon="plus" href="/development/custom-phases">
+    Agregar nuevas fases al flujo
+  </Card>
+</CardGroup>
+
+---
+
+<Info>
+**Defensoría Civil de San Rafael, Mendoza, Argentina** - Automatizando el acceso a la justicia con IA responsable
+</Info>

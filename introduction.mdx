@@ -1,0 +1,211 @@
+---
+title: Introduction
+description: Overview of the Defensoría Civil divorce platform - an intelligent WhatsApp-based legal assistance system powered by LLMs and Clean Architecture
+---
+
+# Introduction to Defensoría Civil Divorce Platform
+
+The **Defensoría Civil divorce platform** is an automated legal assistance system designed to streamline divorce proceedings in San Rafael, Mendoza, Argentina. Built with **Clean Architecture** principles and powered by advanced **Large Language Models (LLMs)**, the platform provides an intelligent, conversational experience through WhatsApp.
+
+## Platform Overview
+
+This system transforms the traditionally complex and paper-heavy divorce filing process into a guided, conversational workflow that citizens can complete entirely via WhatsApp. The platform collects necessary information, validates data in real-time, processes legal documents using OCR, and generates properly formatted legal petitions.
+
+<CardGroup cols={2}>
+  <Card title="Conversational AI" icon="message">
+    Natural language interactions powered by Google Gemini 1.5 Flash with contextual memory and legal domain expertise
+  </Card>
+  <Card title="Clean Architecture" icon="layer-group">
+    Strict separation of concerns across Domain, Application, Infrastructure, and Presentation layers
+  </Card>
+  <Card title="Document Intelligence" icon="file-lines">
+    Automated OCR extraction from ID cards and marriage certificates using Gemini Vision
+  </Card>
+  <Card title="Real-time Validation" icon="shield-check">
+    Multi-layer validation with hallucination detection, prompt injection protection, and legal rule enforcement
+  </Card>
+</CardGroup>
+
+## Key Stakeholders
+
+The platform serves two primary stakeholder groups:
+
+### Citizens Seeking Divorce
+
+**Target Users**: Adults (18+) in San Rafael, Mendoza who need to initiate divorce proceedings but may face barriers such as:
+- Limited legal knowledge
+- Time constraints for in-person office visits
+- Difficulty understanding complex legal terminology
+- Uncertainty about required documentation
+
+**User Experience**: Citizens interact with the system entirely through WhatsApp, receiving:
+- Step-by-step guidance through the divorce filing process
+- Real-time validation of provided information
+- Clear explanations of requirements in conversational Spanish (Argentine dialect)
+- Automated document processing and generation
+
+### Defensoría Civil Operators
+
+**Target Users**: Legal operators and administrators at the Defensoría Civil office responsible for:
+- Reviewing submitted cases
+- Validating citizen-provided information
+- Managing case workflows
+- Generating legal documents
+
+**User Experience**: Operators access a web-based dashboard to:
+- Monitor incoming cases and their completion status
+- Review collected information and uploaded documents
+- Track system metrics and performance
+- Manage user accounts and permissions
+
+## Problem Statement
+
+Divorce proceedings in Argentina traditionally require:
+1. **Multiple in-person visits** to legal assistance offices during business hours
+2. **Paper-based forms** with complex legal terminology
+3. **Manual document collection** and validation
+4. **Extended processing times** due to incomplete submissions
+5. **High barrier to entry** for citizens with limited legal knowledge
+
+These challenges create significant friction, especially for:
+- Working individuals who cannot easily visit offices during business hours
+- Citizens in rural areas with limited access to legal services
+- People with lower education levels who struggle with legal jargon
+- Cases involving sensitive situations (e.g., domestic violence) where multiple in-person visits create emotional burden
+
+## Solution Overview
+
+The Defensoría Civil platform addresses these challenges through:
+
+<Steps>
+  <Step title="WhatsApp-Based Interface">
+    Citizens initiate and complete the entire process via WhatsApp, the most popular messaging platform in Argentina. No app installation or special software required.
+  </Step>
+  
+  <Step title="Conversational Data Collection">
+    An AI-powered chatbot guides users through data collection using natural, conversational language rather than legal jargon. The system maintains context across the entire conversation and remembers previous interactions.
+  </Step>
+  
+  <Step title="Intelligent Validation">
+    Real-time validation ensures data quality:
+    - Age verification (minimum 18 years for marriage)
+    - Date sequence validation (birth → marriage → separation)
+    - Address validation for San Rafael/Mendoza jurisdiction
+    - Document authenticity checks via OCR
+  </Step>
+  
+  <Step title="Automated Document Processing">
+    Users send photos of documents (DNI, marriage certificates) directly through WhatsApp. Gemini Vision OCR extracts structured data automatically.
+  </Step>
+  
+  <Step title="Smart Memory System">
+    Four-layer memory architecture:
+    - **Immediate**: Last 10 messages for conversation flow
+    - **Session**: Current case data
+    - **Episodic**: Historical conversation summaries with semantic search
+    - **Semantic**: Legal knowledge base for domain-specific guidance
+  </Step>
+  
+  <Step title="Safety & Security">
+    Multi-layer security:
+    - Hallucination detection (>99% accuracy) prevents AI from inventing facts
+    - Prompt injection protection filters malicious inputs
+    - Rate limiting (30 req/min per IP, 100 req/min per user)
+    - Security headers (CSP, HSTS, X-Frame-Options)
+  </Step>
+</Steps>
+
+## Technology Foundation
+
+The platform is built on modern, production-grade technologies:
+
+<Info>
+**Backend**: FastAPI (Python 3.12+) with async/await for high-performance I/O
+
+**Database**: PostgreSQL 14+ with pgvector extension for semantic search
+
+**AI/ML**: Google Gemini 1.5 Flash (primary LLM) with Ollama as fallback
+
+**Messaging**: WAHA (WhatsApp HTTP API) for WhatsApp Business integration
+
+**Task Queue**: Celery with Redis for asynchronous document processing
+</Info>
+
+## Architectural Principles
+
+The system follows **Clean Architecture** (Uncle Bob Martin) with strict layer separation:
+
+```
+┌─────────────────────────────────────────┐
+│        Presentation Layer               │
+│  (FastAPI routes, webhooks, CLI)        │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│       Application Layer                 │
+│  (Use cases, services, DTOs)            │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│     Infrastructure Layer                │
+│  (DB, AI clients, messaging, OCR)       │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│          Domain Layer                   │
+│    (Entities, business rules)           │
+└─────────────────────────────────────────┘
+```
+
+**Key Principles**:
+- **Dependency Inversion**: All dependencies point inward toward the domain
+- **Interface Segregation**: Small, focused interfaces defined in Application layer
+- **Single Responsibility**: Each class has one reason to change
+- **Open/Closed**: Extensible without modifying existing code (e.g., LLM fallback system)
+
+## System Capabilities
+
+<CardGroup cols={2}>
+  <Card title="Divorce Types" icon="users">
+    Supports both **unilateral** (single-party) and **conjunta** (joint) divorce filings with appropriate data collection flows
+  </Card>
+  
+  <Card title="Legal Compliance" icon="scale-balanced">
+    Enforces Argentine legal requirements: minimum marriage age, jurisdiction validation, proper date sequences
+  </Card>
+  
+  <Card title="Economic Profiling" icon="money-bill">
+    Collects sworn declarations for BLSG (Beneficio de Litigar sin Gastos) eligibility assessment
+  </Card>
+  
+  <Card title="Special Cases" icon="triangle-exclamation">
+    Handles complex scenarios: minor children, shared assets, custody arrangements, disability considerations
+  </Card>
+</CardGroup>
+
+## Success Metrics
+
+The platform aims to achieve:
+
+- **⏱️ Response Time**: < 5 seconds (95th percentile) for LLM responses
+- **✅ Success Rate**: > 90% conversational completion rate
+- **🎯 Validation Accuracy**: > 95% data validation precision
+- **🚀 Availability**: > 99.9% uptime for critical services
+- **📉 Processing Time**: 80% reduction in case intake time vs. traditional in-person process
+
+<Warning>
+**Development Status**: This system is in active development (v0.1.0). Security features like data encryption at rest and complete audit trails are pending for production deployment.
+</Warning>
+
+## Next Steps
+
+Explore the platform in depth:
+
+<CardGroup cols={2}>
+  <Card title="Features" href="/features">
+    Dive into detailed feature capabilities and real code examples
+  </Card>
+  <Card title="Architecture" href="/architecture">
+    Understand the technical architecture and system design
+  </Card>
+</CardGroup>

@@ -1,0 +1,505 @@
+---
+title: Production Deployment
+description: Production-ready deployment guide with security, monitoring, and scaling considerations
+---
+
+## Production Checklist
+
+Before deploying to production, ensure you have completed the following:
+
+- [ ] Change all default passwords and secret keys
+- [ ] Configure SSL/TLS certificates
+- [ ] Set up database backups
+- [ ] Configure monitoring and alerting
+- [ ] Enable security headers and rate limiting
+- [ ] Review and apply security best practices
+- [ ] Set up CI/CD pipeline
+- [ ] Configure log aggregation
+- [ ] Test disaster recovery procedures
+- [ ] Document rollback procedures
+
+## Environment Variables
+
+### Critical Production Settings
+
+```bash .env.production
+# Environment
+APP_ENV=production
+SECRET_KEY=<generate-with-openssl-rand-hex-32>
+
+# Database - Use managed PostgreSQL service
+DATABASE_URL=postgresql+psycopg2://user:password@prod-db-host:5432/def_civil
+
+# Redis - Use managed Redis service
+REDIS_URL=redis://prod-redis-host:6379/0
+
+# WhatsApp Integration
+WAHA_BASE_URL=https://waha.your-domain.com
+WAHA_API_KEY=<secure-api-key>
+
+# LLM Providers - Production Keys
+OLLAMA_CLOUD_API_KEY=<production-key>
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+GEMINI_API_KEY=<production-key>
+
+# Model Configuration
+LLM_CHAT_MODEL=minimax-m2:cloud
+LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+LLM_VISION_MODEL=qwen3-vl:235b-cloud
+LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+LLM_EMBEDDING_MODEL=nomic-embed-text:latest
+
+# Legal Configuration
+ALLOWED_JURISDICTIONS=San Rafael,Mendoza,General Alvear
+```
+
+### Generating Secure Keys
+
+```bash
+# Generate SECRET_KEY
+openssl rand -hex 32
+
+# Generate API keys
+openssl rand -base64 32
+```
+
+## Production Docker Compose
+
+Modify `docker-compose.yml` for production:
+
+```yaml docker-compose.prod.yml
+version: "3.9"
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    env_file:
+      - .env.production
+    environment:
+      - PYTHONPATH=/app/backend/src
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # Remove volume mounts in production
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    working_dir: /app/backend/src
+    command: sh -c "celery -A infrastructure.tasks.celery_app.app worker -l warning --autoscale=10,3"
+    env_file:
+      - .env.production
+    environment:
+      - PYTHONPATH=/app/backend/src
+    depends_on:
+      - redis
+      - db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A infrastructure.tasks.celery_app.app inspect ping"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  db:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: def_civil
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--auth", "${REDIS_PASSWORD}", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  
+  dashboard:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  redis_data:
+  waha_sessions:
+  waha_media:
+```
+
+**Key Production Changes:**
+- Remove volume mounts for source code (no hot-reload)
+- Add `restart: unless-stopped` for automatic recovery
+- Configure health checks for all services
+- Enable log rotation with size limits
+- Use `.env.production` with secure credentials
+- Configure Redis with authentication
+- Set Celery log level to `warning`
+- Enable autoscaling for workers (3-10 workers)
+
+## Database Backups
+
+### Automated Backup Script
+
+Create `scripts/backup-db.sh`:
+
+```bash scripts/backup-db.sh
+#!/bin/bash
+# Database backup script for Defensoría Civil
+
+set -e
+
+BACKUP_DIR="/backups"
+DB_NAME="def_civil"
+DB_USER="postgres"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+BACKUP_FILE="${BACKUP_DIR}/${DB_NAME}_${TIMESTAMP}.sql.gz"
+
+echo "Starting backup: ${BACKUP_FILE}"
+
+# Create backup directory if it doesn't exist
+mkdir -p ${BACKUP_DIR}
+
+# Run pg_dump inside container and compress
+docker-compose exec -T db pg_dump -U ${DB_USER} ${DB_NAME} | gzip > ${BACKUP_FILE}
+
+echo "Backup completed: ${BACKUP_FILE}"
+
+# Keep only last 7 days of backups
+find ${BACKUP_DIR} -name "${DB_NAME}_*.sql.gz" -mtime +7 -delete
+
+echo "Old backups cleaned up"
+```
+
+### Cron Job for Daily Backups
+
+```bash
+# Add to crontab
+0 2 * * * /opt/defensoria/scripts/backup-db.sh >> /var/log/defensoria-backup.log 2>&1
+```
+
+### Restore from Backup
+
+```bash
+# Stop the application
+docker-compose down
+
+# Restore database
+gunzip -c /backups/def_civil_20260305_020000.sql.gz | docker-compose exec -T db psql -U postgres def_civil
+
+# Restart services
+docker-compose up -d
+```
+
+## Database Migrations
+
+### Running Migrations
+
+```bash
+# Apply all pending migrations
+docker-compose exec api alembic upgrade head
+
+# Rollback one migration
+docker-compose exec api alembic downgrade -1
+
+# View migration history
+docker-compose exec api alembic history
+```
+
+### Migration Best Practices
+
+1. **Always test migrations** in staging environment first
+2. **Backup database** before running migrations
+3. **Review SQL** generated by Alembic: `alembic upgrade head --sql`
+4. **Document rollback** procedures for each migration
+5. **Avoid data loss** - use batch operations for large tables
+
+## Monitoring and Logging
+
+### Health Check Endpoints
+
+The API exposes health check endpoints:
+
+```python
+# GET /health
+{
+  "status": "healthy",
+  "database": "connected",
+  "redis": "connected",
+  "timestamp": "2026-03-05T10:30:00Z"
+}
+```
+
+### Structured Logging
+
+The application uses `structlog` for structured JSON logging:
+
+```python
+import structlog
+
+logger = structlog.get_logger()
+
+logger.info(
+    "request_complete",
+    method="POST",
+    path="/api/cases",
+    status_code=201,
+    duration_ms=150
+)
+```
+
+### Log Aggregation
+
+Recommended setup:
+
+```yaml docker-compose.monitoring.yml
+services:
+  # Add to existing docker-compose.yml
+  
+  promtail:
+    image: grafana/promtail:latest
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail-config.yml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+  
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+  
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=changeme
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  loki_data:
+  grafana_data:
+```
+
+## Scaling Considerations
+
+### Horizontal Scaling
+
+**API Service:**
+```yaml
+api:
+  deploy:
+    replicas: 3
+  environment:
+    - WORKERS=4  # Uvicorn workers per container
+```
+
+**Worker Service:**
+```bash
+# Autoscale based on queue length
+celery -A infrastructure.tasks.celery_app.app worker --autoscale=10,3
+```
+
+### Database Connection Pooling
+
+Configure in `core/config.py`:
+
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.pool import QueuePool
+
+engine = create_engine(
+    settings.database_url,
+    poolclass=QueuePool,
+    pool_size=10,
+    max_overflow=20,
+    pool_pre_ping=True,
+    pool_recycle=3600
+)
+```
+
+### Redis Caching Strategy
+
+```python
+# Cache frequently accessed data
+from redis import Redis
+from functools import wraps
+import json
+
+def cache_result(ttl=300):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            cache_key = f"{func.__name__}:{args}:{kwargs}"
+            cached = redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+            result = func(*args, **kwargs)
+            redis.setex(cache_key, ttl, json.dumps(result))
+            return result
+        return wrapper
+    return decorator
+```
+
+### Load Balancing
+
+Use Nginx as reverse proxy:
+
+```nginx
+upstream api_backend {
+    least_conn;
+    server api1:8000;
+    server api2:8000;
+    server api3:8000;
+}
+
+server {
+    listen 80;
+    server_name api.defensoria.example.com;
+
+    location / {
+        proxy_pass http://api_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+## Performance Optimization
+
+### Database Indexes
+
+```sql
+-- Add indexes for frequently queried fields
+CREATE INDEX idx_cases_phone ON cases(phone_number);
+CREATE INDEX idx_cases_status ON cases(status);
+CREATE INDEX idx_cases_created ON cases(created_at DESC);
+
+-- Vector similarity search optimization
+CREATE INDEX ON documents USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+```
+
+### Async Processing
+
+Offload heavy tasks to Celery workers:
+
+```python
+from infrastructure.tasks.celery_app import app
+
+@app.task
+def process_document_ocr(document_id: int):
+    """Process document OCR asynchronously"""
+    # Heavy OCR processing
+    pass
+
+# In API endpoint
+process_document_ocr.delay(document_id)
+```
+
+## Disaster Recovery
+
+### Backup Strategy
+
+1. **Database**: Daily full backups, hourly incremental
+2. **Uploaded Files**: Sync to S3 or object storage
+3. **Configuration**: Version control in Git
+4. **Secrets**: Encrypted vault (HashiCorp Vault, AWS Secrets Manager)
+
+### Recovery Time Objectives
+
+- **RTO (Recovery Time Objective)**: 4 hours
+- **RPO (Recovery Point Objective)**: 1 hour
+
+### Testing Recovery Procedures
+
+```bash
+# Test restore monthly
+./scripts/test-restore.sh
+
+# Verify data integrity
+./scripts/verify-backup.sh
+```
+
+## SSL/TLS Configuration
+
+Use Let's Encrypt for free SSL certificates:
+
+```bash
+# Install certbot
+sudo apt-get install certbot python3-certbot-nginx
+
+# Obtain certificate
+sudo certbot --nginx -d defensoria.example.com
+
+# Auto-renewal
+sudo certbot renew --dry-run
+```
+
+## Next Steps
+
+- Review [Security Configuration](/deployment/security) for security hardening
+- Set up [Monitoring Dashboards](/deployment/production#monitoring) for observability
+- Configure [CI/CD Pipeline](/development/testing#cicd) for automated deployments

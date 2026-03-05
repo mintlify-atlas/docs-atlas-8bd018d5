@@ -1,0 +1,367 @@
+---
+title: Metrics API
+description: Analytics and metrics endpoints for monitoring system usage and case statistics
+---
+
+The Metrics API provides analytics data for monitoring the Defensoría Civil platform.
+
+<Note>
+  All endpoints require authentication. Include `Authorization: Bearer <token>` in headers.
+</Note>
+
+## Summary Metrics
+
+Get overall system metrics summary.
+
+```http
+GET /api/metrics/summary
+```
+
+**Response (200):**
+
+<ResponseField name="total_cases" type="integer">
+  Total number of cases in the system
+</ResponseField>
+
+<ResponseField name="recent_cases_7d" type="integer">
+  Cases created in the last 7 days
+</ResponseField>
+
+<ResponseField name="recent_cases_30d" type="integer">
+  Cases created in the last 30 days
+</ResponseField>
+
+<ResponseField name="cases_by_status" type="object">
+  Case counts grouped by status
+  
+  ```json
+  {
+    "active": 80,
+    "completed": 60,
+    "archived": 10
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="cases_by_type" type="object">
+  Case counts grouped by divorce type
+  
+  ```json
+  {
+    "unilateral": 100,
+    "conjunta": 50
+  }
+  ```
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/metrics/summary \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+{
+  "total_cases": 150,
+  "recent_cases_7d": 12,
+  "recent_cases_30d": 45,
+  "cases_by_status": {
+    "active": 80,
+    "completed": 60,
+    "archived": 10
+  },
+  "cases_by_type": {
+    "unilateral": 100,
+    "conjunta": 50
+  }
+}
+```
+
+## Cases by Status
+
+Get detailed breakdown of cases by status with percentages.
+
+```http
+GET /api/metrics/by_status
+```
+
+**Response (200):**
+
+Array of status objects:
+
+<ResponseField name="status" type="string">
+  Status name
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Number of cases with this status
+</ResponseField>
+
+<ResponseField name="percent" type="number">
+  Percentage of total cases (0-1)
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/metrics/by_status \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "status": "active",
+    "count": 80,
+    "percent": 0.533
+  },
+  {
+    "status": "completed",
+    "count": 60,
+    "percent": 0.4
+  },
+  {
+    "status": "archived",
+    "count": 10,
+    "percent": 0.067
+  }
+]
+```
+
+## Cases by Type
+
+Get breakdown of cases by divorce type.
+
+```http
+GET /api/metrics/by_type
+```
+
+**Response (200):**
+
+Array of type objects:
+
+<ResponseField name="type" type="string">
+  Divorce type: "unilateral" or "conjunta"
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Number of cases of this type
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/metrics/by_type \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "type": "unilateral",
+    "count": 100
+  },
+  {
+    "type": "conjunta",
+    "count": 50
+  }
+]
+```
+
+## Timeline Metrics
+
+Get daily case creation counts over a time period.
+
+```http
+GET /api/metrics/timeline
+```
+
+**Query Parameters:**
+
+<ParamField query="days" type="integer" default="30">
+  Number of days to look back
+</ParamField>
+
+**Response (200):**
+
+Array of daily data points:
+
+<ResponseField name="date" type="string">
+  Date in YYYY-MM-DD format
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Number of cases created on this date
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET "http://localhost:8000/api/metrics/timeline?days=7" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response:**
+
+```json
+[
+  {
+    "date": "2026-02-27",
+    "count": 3
+  },
+  {
+    "date": "2026-02-28",
+    "count": 5
+  },
+  {
+    "date": "2026-03-01",
+    "count": 2
+  },
+  {
+    "date": "2026-03-02",
+    "count": 4
+  },
+  {
+    "date": "2026-03-03",
+    "count": 6
+  },
+  {
+    "date": "2026-03-04",
+    "count": 3
+  },
+  {
+    "date": "2026-03-05",
+    "count": 2
+  }
+]
+```
+
+## Use Cases
+
+### Dashboard Overview
+
+Fetch summary metrics for the main dashboard:
+
+```javascript
+const response = await fetch('http://localhost:8000/api/metrics/summary', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+const metrics = await response.json();
+console.log(`Total cases: ${metrics.total_cases}`);
+console.log(`New this week: ${metrics.recent_cases_7d}`);
+```
+
+### Status Distribution Chart
+
+Create a pie chart showing case distribution by status:
+
+```javascript
+const response = await fetch('http://localhost:8000/api/metrics/by_status', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+const statusData = await response.json();
+
+// Use with Chart.js or similar
+const chartData = {
+  labels: statusData.map(item => item.status),
+  datasets: [{
+    data: statusData.map(item => item.count),
+    backgroundColor: ['#4CAF50', '#2196F3', '#9E9E9E']
+  }]
+};
+```
+
+### Timeline Chart
+
+Create a line chart showing case creation trends:
+
+```javascript
+const response = await fetch('http://localhost:8000/api/metrics/timeline?days=30', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+const timelineData = await response.json();
+
+// Use with Chart.js or similar
+const chartData = {
+  labels: timelineData.map(item => item.date),
+  datasets: [{
+    label: 'Cases Created',
+    data: timelineData.map(item => item.count),
+    borderColor: '#2196F3',
+    fill: false
+  }]
+};
+```
+
+### Type Comparison
+
+Compare unilateral vs. joint divorce cases:
+
+```javascript
+const response = await fetch('http://localhost:8000/api/metrics/by_type', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+});
+
+const typeData = await response.json();
+
+const unilateral = typeData.find(item => item.type === 'unilateral')?.count || 0;
+const conjunta = typeData.find(item => item.type === 'conjunta')?.count || 0;
+
+console.log(`Unilateral: ${unilateral} (${(unilateral / (unilateral + conjunta) * 100).toFixed(1)}%)`);
+console.log(`Conjunta: ${conjunta} (${(conjunta / (unilateral + conjunta) * 100).toFixed(1)}%)`);
+```
+
+## Implementation Reference
+
+See the implementation in:
+- `backend/src/presentation/api/routes/metrics.py` - All metrics endpoints (lines 14-128)
+- `backend/src/infrastructure/persistence/models.py` - Case model for queries
+
+## Performance Considerations
+
+- Metrics queries use database aggregations for efficiency
+- Timeline queries are filtered by date range to limit result size
+- No expensive joins are performed
+- Consider caching metrics results for high-traffic dashboards
+
+## Future Enhancements
+
+Potential additions to the metrics API:
+
+- Average case completion time
+- Operator performance metrics
+- Message volume statistics
+- Economic eligibility approval rates
+- Document submission rates
+- Phase transition analytics
+
+## Data Privacy
+
+<Warning>
+  Metrics endpoints return only aggregate statistics. No personally identifiable information (PII) is included in metric responses.
+</Warning>
+
+## Error Responses
+
+- `401` - Missing or invalid authentication token
+- `403` - User doesn't have permission to view metrics
+
+All metrics endpoints require operator-level authentication.

@@ -1,0 +1,556 @@
+---
+title: Features
+description: Comprehensive feature overview of the Defensoría Civil divorce platform with real examples from the codebase
+---
+
+# Platform Features
+
+The Defensoría Civil divorce platform combines conversational AI, document intelligence, and legal validation into a cohesive system. This page details each feature with real implementation examples.
+
+## WhatsApp Conversational Flow
+
+### Intelligent State Machine
+
+The platform implements a **finite state machine** that guides users through divorce filing steps. Each phase transitions based on validated user input.
+
+<Tabs>
+  <Tab title="State Flow">
+    The conversation engine manages phases defined in `process_incoming_message.py:134-230`:
+
+    ```python
+    async def _handle_phase(self, case, text: str) -> str:
+        """Maneja el flujo según la fase actual del caso"""
+        
+        if case.phase == "inicio":
+            return await self._phase_inicio(case)
+        
+        elif case.phase == "tipo_divorcio":
+            return await self._phase_tipo_divorcio(case, text)
+        
+        elif case.phase == "apellido":
+            return await self._phase_apellido(case, text)
+        
+        # ... 20+ more phases for complete data collection
+    ```
+
+    **Key Phases**:
+    - `inicio` → Initial greeting and introduction
+    - `tipo_divorcio` → Unilateral vs. conjunta selection
+    - `apellido`, `nombres`, `cuit` → Personal data collection
+    - `fecha_nacimiento`, `domicilio` → Validation-heavy fields
+    - `econ_*` → Economic profile for BLSG eligibility
+    - `apellido_conyuge`, `nombres_conyuge` → Spouse information
+    - `hijos`, `hijos_cuantos` → Children declaration
+    - `bienes` → Asset information
+    - `documentacion` → Document upload phase
+  </Tab>
+
+  <Tab title="Example Interaction">
+    **Real conversation flow** from `process_incoming_message.py:231-247`:
+
+    ```python
+    async def _phase_inicio(self, case) -> str:
+        case.phase = "tipo_divorcio"
+        self.cases.update(case)
+        body = (
+            "¡Hola! 👋 Soy tu asistente de la *Defensoría Civil de San Rafael*.\n\n"
+            "Te voy a guiar paso a paso para iniciar tu trámite de divorcio.\n\n"
+            "¿Cómo desean presentarlo?"
+        )
+        self._pending_interactive = {
+            "buttons": [
+                {"text": "Solo yo (Unilateral)"},
+                {"text": "Los dos (Conjunta)"},
+            ],
+            "footer": "Defensoría Civil - San Rafael",
+        }
+        return body
+    ```
+
+    This produces **interactive WhatsApp buttons** for better UX.
+  </Tab>
+
+  <Tab title="CUIT Parsing">
+    **Smart data extraction** from `process_incoming_message.py:298-320`:
+
+    ```python
+    async def _phase_cuit(self, case, text: str) -> str:
+        import re
+        
+        # Limpiar el CUIT: quitar guiones y espacios
+        cuit_clean = re.sub(r'[\s-]', '', text.strip())
+        
+        # Validar formato CUIT: 10 u 11 dígitos
+        if not re.match(r'^\d{10,11}$', cuit_clean):
+            return "El CUIT/CUIL ingresado no es válido..."
+        
+        # Extraer DNI del CUIT (dígitos 3 al 10)
+        dni = cuit_clean[2:10]
+        
+        # Formatear CUIT con guiones para visualización
+        cuit_formatted = f"{cuit_clean[0:2]}-{dni}-{cuit_clean[10]}"
+        
+        case.cuit = cuit_formatted
+        case.dni = dni  # Auto-extracted!
+        case.phase = "fecha_nacimiento"
+        self.cases.update(case)
+        
+        return f"✅ CUIT/CUIL: {cuit_formatted}\nDNI extraído: {dni}..."
+    ```
+
+    The system **automatically extracts DNI** from CUIT/CUIL format.
+  </Tab>
+</Tabs>
+
+### Context-Aware Responses
+
+The system **recognizes returning users** and maintains conversation context across sessions:
+
+<Info>
+Returning users are identified by phone number (`process_incoming_message.py:82`):
+```python
+case = self.cases.get_or_create_by_phone(phone)
+```
+
+The system resumes from the last completed phase, preventing redundant data collection.
+</Info>
+
+## Advanced Memory System
+
+Implemented in `memory_service.py:11-266`, the platform uses a **four-layer memory architecture**:
+
+<CardGroup cols={2}>
+  <Card title="Immediate Memory" icon="clock">
+    **Last 10 messages** stored for conversation continuity
+    
+    ```python
+    async def store_immediate_memory(self, case_id: int, content: str):
+        self.memory_repo.add_memory(case_id, "immediate", content)
+        
+        # Mantener solo últimos 10
+        memories = self.db.query(Memory).filter(
+            Memory.case_id == case_id,
+            Memory.kind == "immediate"
+        ).order_by(Memory.created_at.desc()).all()
+        
+        if len(memories) > 10:
+            for mem in memories[10:]:
+                self.db.delete(mem)
+    ```
+    
+    Located in: `memory_service.py:26-39`
+  </Card>
+
+  <Card title="Session Memory" icon="database">
+    **Current case data** stored as JSON key-value pairs
+    
+    ```python
+    async def store_session_memory(self, case_id: int, key: str, value: Any):
+        import json
+        content = json.dumps({key: value})
+        
+        # Actualizar o crear
+        existing = self.db.query(Memory).filter(
+            Memory.case_id == case_id,
+            Memory.kind == "session",
+            Memory.content.like(f'%"{key}":%')
+        ).first()
+        
+        if existing:
+            data = json.loads(existing.content)
+            data[key] = value
+            existing.content = json.dumps(data)
+    ```
+    
+    Located in: `memory_service.py:41-59`
+  </Card>
+
+  <Card title="Episodic Memory" icon="book">
+    **Historical summaries** with semantic search using pgvector
+    
+    ```python
+    async def search_episodic_memory(self, case_id: int, query: str, limit: int = 5):
+        # Generar embedding de la query
+        embeddings = await self.llm.embed([query])
+        query_embedding = embeddings[0]
+        
+        # Búsqueda vectorial usando pgvector
+        result = self.db.execute(
+            text("""
+                SELECT id, content,
+                       embedding <-> CAST(:query_embedding AS vector) AS distance
+                FROM memories
+                WHERE case_id = :case_id AND kind = 'episodic'
+                ORDER BY distance
+                LIMIT :limit
+            """),
+            {"query_embedding": str(query_embedding), "case_id": case_id, "limit": limit}
+        ).fetchall()
+    ```
+    
+    Located in: `memory_service.py:110-166`
+  </Card>
+
+  <Card title="Semantic Knowledge" icon="brain">
+    **Legal knowledge base** for domain-specific guidance
+    
+    ```python
+    async def search_semantic_knowledge(self, query: str, limit: int = 3):
+        embeddings = await self.llm.embed([query])
+        
+        result = self.db.execute(
+            text("""
+                SELECT id, title, content,
+                       embedding <-> CAST(:query_embedding AS vector) AS distance
+                FROM semantic_knowledge
+                ORDER BY distance
+                LIMIT :limit
+            """),
+            {"query_embedding": str(query_embedding), "limit": limit}
+        ).fetchall()
+    ```
+    
+    Located in: `memory_service.py:168-216`
+  </Card>
+</CardGroup>
+
+### Contextual Prompt Building
+
+All memory types combine into rich LLM context (`memory_service.py:218-247`):
+
+```python
+async def build_context_for_llm(self, case_id: int, current_question: str) -> str:
+    context_parts = []
+    
+    # 1. Memoria inmediata (últimos mensajes)
+    immediate = await self.retrieve_immediate_memory(case_id)
+    if immediate:
+        context_parts.append("## Conversación reciente:\n" + "\n".join(immediate))
+    
+    # 2. Datos de sesión
+    session_data = await self.retrieve_session_data(case_id)
+    if session_data:
+        import json
+        context_parts.append(f"## Datos del caso:\n{json.dumps(session_data, indent=2)}")
+    
+    # 3. Memoria episódica relevante
+    episodic = await self.search_episodic_memory(case_id, current_question, limit=3)
+    if episodic:
+        episodes = "\n".join([f"- {ep['content']}" for ep in episodic])
+        context_parts.append(f"## Conversaciones anteriores relevantes:\n{episodes}")
+    
+    # 4. Conocimiento legal relevante
+    knowledge = await self.search_semantic_knowledge(current_question, limit=2)
+    if knowledge:
+        docs = "\n\n".join([f"**{k['title']}**\n{k['content']}" for k in knowledge])
+        context_parts.append(f"## Conocimiento legal aplicable:\n{docs}")
+    
+    return "\n\n".join(context_parts)
+```
+
+## Validation & Security Features
+
+### Multi-Layer Data Validation
+
+<Tabs>
+  <Tab title="Date Validation">
+    **Argentine legal requirements** enforced in `SimpleDateValidationService`:
+
+    - Minimum age: 18 years for marriage
+    - Date format: DD/MM/AAAA (Argentine standard)
+    - Sequence validation: birth → marriage → separation
+    - Future date prevention
+
+    Example usage in `process_incoming_message.py:322-338`:
+    ```python
+    async def _phase_fecha_nacimiento(self, case, text: str) -> str:
+        result = self.validator_date.validate_birth_date(text)
+        if not result.is_valid:
+            errors = "\n- ".join(result.errors)
+            return f"La fecha no es válida:\n- {errors}\n\nIngresá tu fecha de nacimiento..."
+        
+        from datetime import datetime
+        case.fecha_nacimiento = datetime.strptime(result.normalized_date, "%d/%m/%Y").date()
+        case.phase = "domicilio"
+        self.cases.update(case)
+        return "✅ Perfecto. ¿Cuál es tu domicilio actual?..."
+    ```
+  </Tab>
+
+  <Tab title="Address Validation">
+    **Jurisdiction enforcement** for San Rafael/Mendoza (`SimpleAddressValidationService`):
+
+    - Street and number required
+    - City and province validation
+    - Special handling for marital address (competencia)
+    - Normalized format output
+
+    Example usage in `process_incoming_message.py:340-361`:
+    ```python
+    async def _phase_domicilio(self, case, text: str) -> str:
+        result = self.validator_addr.validate_address(text, is_marital_address=False)
+        if not result.is_valid:
+            errors = "\n- ".join(result.errors)
+            return (
+                "La dirección está incompleta:\n- " + errors +
+                "\n\nPodés responder de estas formas:\n"
+                "- Calle y número (ej: 'San Martín 123')\n"
+                "- Ciudad y provincia (ej: 'San Rafael Mendoza')\n"
+                "- O todo junto: 'San Martín 123, San Rafael Mendoza'"
+            )
+        
+        case.domicilio = result.normalized_address or text.strip()
+        case.phase = "econ_intro"
+        self.cases.update(case)
+    ```
+  </Tab>
+
+  <Tab title="Response Validation">
+    **Input quality checks** prevent empty or nonsensical data:
+
+    - Minimum length validation
+    - Type-specific rules (e.g., names vs. DNI)
+    - Pattern matching for structured data
+    - Context-aware validation
+  </Tab>
+</Tabs>
+
+### Hallucination Detection
+
+Implemented in `hallucination_detection_service.py:1-100`, the platform **prevents AI from inventing facts**:
+
+<Steps>
+  <Step title="Pattern Detection">
+    Flags suspicious phrases that indicate fabricated data:
+    
+    ```python
+    HALLUCINATION_PATTERNS = [
+        r"según mi base de datos",
+        r"en mi sistema",
+        r"tengo acceso a",
+        r"puedo ver que",
+        r"según mis registros",
+        r"he verificado que",
+    ]
+    ```
+  </Step>
+
+  <Step title="Data Invention Check">
+    Detects specific data not present in context:
+    
+    ```python
+    SPECIFIC_DATA_PATTERNS = [
+        r"\d{7,8}",  # DNI
+        r"\d{2}/\d{2}/\d{4}",  # Fechas específicas
+        r"expediente\s+n[úu]mero\s+\d+",  # Números de expediente
+        r"juzgado\s+\d+",  # Juzgados específicos
+    ]
+    ```
+
+    Only flags data **NOT found in context or user question**.
+  </Step>
+
+  <Step title="Confidence Scoring">
+    Assigns confidence score (0.0-1.0) based on detected issues:
+    
+    ```python
+    async def check_response(self, response: str, context: str, question: str):
+        flags = []
+        confidence = 1.0
+        
+        for pattern in self.compiled_patterns:
+            if pattern.search(response):
+                flags.append("claims_system_access")
+                confidence -= 0.3
+        
+        for pattern in self.data_patterns:
+            matches = pattern.findall(response)
+            for match in matches:
+                if match in context or match in question:
+                    continue  # OK, from user input
+                flags.append(f"invents_specific_data:{match}")
+                confidence -= 0.4
+    ```
+  </Step>
+
+  <Step title="Rejection & Logging">
+    Invalid responses trigger fallback message:
+    
+    ```python
+    if not hallucination_check.is_valid:
+        logger.warning(
+            "hallucination_detected",
+            case_id=case.id,
+            confidence=hallucination_check.confidence,
+            flags=hallucination_check.flags
+        )
+        reply = "Disculpá, tuve un problema. ¿Podés reformular tu consulta?"
+    ```
+  </Step>
+</Steps>
+
+### Prompt Injection Protection
+
+The `SafetyLayer` (`safety_layer.py`) filters malicious inputs:
+
+```python
+safety_result = self.safety.filter_input(text)
+if not safety_result.allowed:
+    reply = (
+        "No puedo procesar esa solicitud. Por favor reformulá tu mensaje "
+        "sin instrucciones técnicas hacia el sistema."
+    )
+```
+
+Located in: `conversation_engine.py:33-44`
+
+### Rate Limiting
+
+Implemented in `rate_limit.py` middleware:
+
+- **30 requests/minute per IP** (prevents DDoS)
+- **100 requests/minute per authenticated user** (normal usage)
+- Redis-backed for distributed rate limiting
+- Exponential backoff on violations
+
+## Document Processing
+
+### OCR with Gemini Vision
+
+The platform extracts structured data from photos using **Gemini Vision** (`gemini_ocr_service_impl.py`):
+
+<CardGroup cols={2}>
+  <Card title="DNI Extraction" icon="id-card">
+    Extracts from Argentine national ID cards:
+    - Full name (apellido y nombres)
+    - DNI number
+    - Birth date
+    - Gender (sexo)
+    - Nationality
+    - Issue and expiration dates
+    
+    Handles both **frente** (front) and **dorso** (back) automatically.
+  </Card>
+
+  <Card title="Marriage Certificate" icon="certificate">
+    Extracts from marriage certificates:
+    - Spouse names
+    - Marriage date
+    - Marriage location
+    - Certificate number (acta número)
+    - Book/folio references (libro/foja)
+    - Issuing office
+  </Card>
+</CardGroup>
+
+### PDF Generation
+
+Legal documents generated via **ReportLab** (`pdf_service_impl.py`):
+
+- Formatted legal petitions with proper headers
+- Argentine legal document standards
+- Signatures and stamps placement
+- Multi-page support with proper pagination
+
+## LLM Router & Fallback System
+
+The **LLMRouter** (`router.py:15-100`) implements intelligent model selection:
+
+```python
+class LLMRouter(LLMClient):
+    def __init__(self):
+        self.providers = {
+            'ollama_cloud': OllamaCloudClient(),
+            'ollama_local': OllamaClient(),
+            'gemini': GeminiClient()
+        }
+        
+        self.model_map = {
+            'chat': settings.llm_chat_model,
+            'reasoning': settings.llm_reasoning_model,
+            'hallucination_check': settings.llm_hallucination_model,
+            'vision_ocr': settings.llm_vision_model,
+            'embeddings': settings.llm_embedding_model
+        }
+        
+        self.fallback_order = ['ollama_cloud', 'ollama_local', 'gemini']
+```
+
+**Task-Specific Routing**:
+- **Chat**: General conversation (Ollama Cloud preferred)
+- **Reasoning**: Complex legal logic
+- **Hallucination Check**: Response validation
+- **Vision OCR**: Document extraction (Gemini Vision)
+- **Embeddings**: Semantic search (text-embedding-004)
+
+**Automatic Fallback**: If primary provider fails, automatically tries next in chain.
+
+## Interactive WhatsApp Features
+
+The platform uses **WhatsApp Business API** interactive components:
+
+<Tabs>
+  <Tab title="Buttons">
+    Quick reply buttons for binary choices:
+    
+    ```python
+    self._pending_interactive = {
+        "buttons": [
+            {"text": "Sí"},
+            {"text": "No"},
+        ],
+        "footer": "Seleccioná una opción",
+    }
+    ```
+    
+    Example: `process_incoming_message.py:558-562`
+  </Tab>
+
+  <Tab title="Lists">
+    Multi-option selection menus:
+    
+    ```python
+    self._pending_interactive = {
+        "list_data": {
+            "description": "Seleccioná tu situación laboral",
+            "button_text": "Ver opciones",
+            "title": "Situación Laboral",
+            "sections": [{
+                "title": "Opciones",
+                "rows": [
+                    {"title": "Desocupado/a", "rowId": "desocupado"},
+                    {"title": "Relación de dependencia", "rowId": "dependencia"},
+                    {"title": "Autónomo / Monotributo", "rowId": "autonomo"},
+                    {"title": "Jubilación / Pensión", "rowId": "jubilado"},
+                ],
+            }],
+        }
+    }
+    ```
+    
+    Example: `process_incoming_message.py:368-386`
+  </Tab>
+</Tabs>
+
+## Asynchronous Task Processing
+
+Heavy operations run asynchronously via **Celery** (`celery_app.py`):
+
+- OCR processing (vision API calls)
+- PDF generation (complex document rendering)
+- Email notifications
+- Batch data exports
+
+Backed by **Redis** for task queue management.
+
+<Warning>
+**Performance Note**: LLM response times target < 5 seconds (95th percentile). Document OCR may take 10-15 seconds for complex images.
+</Warning>
+
+## Next Steps
+
+Explore the technical architecture:
+
+<Card title="Architecture Deep Dive" href="/architecture" icon="sitemap">
+  Learn about Clean Architecture implementation, database schema, and system components
+</Card>

@@ -1,0 +1,846 @@
+---
+title: 'Dashboard & Operator Interface'
+description: 'Complete guide to the operator dashboard including case management, metrics, document review, and administrative features'
+icon: 'gauge-high'
+---
+
+## Overview
+
+The Defensoría Civil operator dashboard provides a comprehensive interface for managing divorce cases, reviewing documents, monitoring metrics, and communicating with users. Built with React, TypeScript, and TanStack Query for real-time updates.
+
+<Note>
+  The dashboard auto-refreshes metrics every 30 seconds to provide up-to-date case statistics.
+</Note>
+
+---
+
+## Dashboard Home
+
+**Route:** `/` or `/dashboard`
+
+**Component:** `frontend/src/features/metrics/components/Dashboard.tsx`
+
+### Summary Cards
+
+Four key metric cards displayed at the top:
+
+<CardGroup cols={2}>
+  <Card title="Casos Totales" icon="file-lines">
+    **Metric:** Total number of cases in the system
+
+    **Data source:** `GET /api/metrics/summary`
+
+    **Display:** Animated number ticker with blue file icon
+
+    **Subtext:** "X nuevos esta semana"
+
+    **Component:**
+    ```tsx
+    <NumberTicker 
+      value={summary?.total_cases || 0}
+      className="text-3xl font-bold"
+    />
+    ```
+  </Card>
+
+  <Card title="Últimos 7 Días" icon="trending-up">
+    **Metric:** Cases created in the last 7 days
+
+    **Display:** Green trending-up icon
+
+    **Subtext:** "Casos nuevos esta semana"
+
+    **Use case:** Track weekly intake volume
+  </Card>
+
+  <Card title="Últimos 30 Días" icon="clock">
+    **Metric:** Cases created in the last 30 days
+
+    **Display:** Purple clock icon
+
+    **Subtext:** "Casos este mes"
+
+    **Use case:** Monthly performance tracking
+  </Card>
+
+  <Card title="Completados" icon="users">
+    **Metric:** Cases with status `documentacion_completa`
+
+    **Display:** Green users icon with **BorderBeam** animation (glowing border)
+
+    **Subtext:** "Documentación completa"
+
+    **Highlight:** Visual emphasis as key success metric
+  </Card>
+</CardGroup>
+
+### Data Visualization
+
+<Tabs>
+  <Tab title="Status Distribution (Pie Chart)">
+    **Chart type:** Pie chart with labels
+
+    **Data source:** `GET /api/metrics/by_status`
+
+    **Segments:**
+    - **Nuevos** (gray): `status = 'new'`
+    - **Datos Completos** (blue): `status = 'datos_completos'`
+    - **Documentación Completa** (green): `status = 'documentacion_completa'`
+
+    **Display format:**
+    ```
+    Nuevos: 45 (52%)
+    Datos Completos: 30 (35%)
+    Documentación Completa: 11 (13%)
+    ```
+
+    **Interactive:** Hover for detailed tooltip
+
+    **Implementation:**
+    ```tsx
+    <PieChart>
+      <Pie
+        data={byStatus}
+        dataKey="count"
+        label={({ status, count, percent }) => 
+          `${STATUS_LABELS[status]}: ${count} (${(percent * 100).toFixed(0)}%)`
+        }
+      >
+        {byStatus.map((entry, index) => (
+          <Cell key={index} fill={COLORS[entry.status]} />
+        ))}
+      </Pie>
+    </PieChart>
+    ```
+  </Tab>
+
+  <Tab title="Timeline (Line Chart)">
+    **Chart type:** Line chart with cartesian grid
+
+    **Data source:** `GET /api/metrics/timeline?days=30`
+
+    **X-axis:** Date (formatted as "DD/MM")
+
+    **Y-axis:** Number of cases created
+
+    **Data points:** Daily case creation count
+
+    **Styling:**
+    - Blue line (`#3b82f6`)
+    - Stroke width: 2
+    - Dot markers on data points
+
+    **Tooltip:** Shows full date and count
+    ```
+    15 de marzo: 3 Casos
+    ```
+
+    **Use case:** Identify intake trends and peak days
+  </Tab>
+</Tabs>
+
+### Quick Actions
+
+**Buttons:**
+1. **Ver Todos los Casos** → Navigate to `/cases`
+2. **Ver Casos Nuevos** → Navigate to `/cases?status=new`
+3. **Ver Casos Completados** → Navigate to `/cases?status=documentacion_completa`
+
+**Styling:** Outlined buttons in a flex row
+
+---
+
+## Cases Management
+
+**Route:** `/cases`
+
+**Component:** `frontend/src/features/cases/components/CasesList.tsx`
+
+### Cases List View
+
+#### Search & Filters
+
+<Steps>
+  <Step title="Search Bar">
+    **Placeholder:** "Buscar por nombre o DNI..."
+
+    **Icon:** Magnifying glass (left-aligned)
+
+    **Behavior:**
+    - Debounced input (updates on typing pause)
+    - Searches in `case.nombre` and `case.dni` fields
+    - Resets pagination to page 1 on search
+
+    **API:** `GET /api/cases?search={query}`
+  </Step>
+
+  <Step title="Status Filters">
+    **Buttons:**
+    - Nuevos
+    - Datos Completos
+    - Documentación Completa
+
+    **Behavior:**
+    - Toggle on/off (single selection)
+    - Selected state: Blue background
+    - Unselected: White outline
+
+    **API:** `GET /api/cases?status={status}`
+  </Step>
+
+  <Step title="Type Filters">
+    **Buttons:**
+    - Unilateral
+    - Conjunta
+
+    **Separated by vertical divider** from status filters
+
+    **API:** `GET /api/cases?type={type}`
+  </Step>
+</Steps>
+
+#### Table Columns
+
+| Column | Width | Content | Actions |
+|--------|-------|---------|--------|
+| **ID** | Fixed | `#123` | - |
+| **Nombre** | Auto | Full name | Click to view |
+| **DNI** | Fixed | 8 digits | - |
+| **Tipo** | Fixed | Unilateral/Conjunta (capitalized) | - |
+| **Estado** | Fixed | Badge with color | - |
+| **Fase** | Auto | Current phase (formatted) | - |
+| **Fecha Creación** | Fixed | `DD/MM/YYYY HH:mm` | - |
+| **Acciones** | Fixed | View + Download icons | Click handlers |
+
+**Status badge colors:**
+```tsx
+const getStatusBadgeColor = (status: string) => {
+  switch (status) {
+    case 'new':
+      return 'bg-gray-100 text-gray-800';
+    case 'datos_completos':
+      return 'bg-blue-100 text-blue-800';
+    case 'documentacion_completa':
+      return 'bg-green-100 text-green-800';
+  }
+};
+```
+
+**Phase formatting:**
+```tsx
+case_.phase.replace(/_/g, ' ') // "apellido_conyuge" → "apellido conyuge"
+```
+
+#### Pagination
+
+**Controls:**
+- **Left:** "Mostrando X a Y de Z casos"
+- **Right:** Previous / Next buttons
+
+**Settings:**
+- Default page size: 50
+- Disabled state for first/last page
+- Page numbers from API response
+
+**Implementation:**
+```tsx
+const handlePageChange = (newPage: number) => {
+  setFilters({ ...filters, page: newPage });
+};
+```
+
+#### Row Actions
+
+<CardGroup cols={2}>
+  <Card title="View Detail" icon="eye">
+    **Icon:** Eye (blue)
+
+    **Action:** Navigate to `/cases/{id}`
+
+    **Shortcut:** Click anywhere on row
+  </Card>
+
+  <Card title="Download PDF" icon="download">
+    **Icon:** Download (green)
+
+    **Action:**
+    1. Show loading toast
+    2. Call `GET /api/cases/{id}/petition/pdf`
+    3. Create blob and trigger download
+    4. Success/error toast
+
+    **Filename:** `demanda-divorcio-{id}.pdf`
+
+    **Error handling:** Displays "Error al descargar el PDF"
+  </Card>
+</CardGroup>
+
+---
+
+## Case Detail View
+
+**Route:** `/cases/:id`
+
+**Component:** `frontend/src/features/cases/components/CaseDetail.tsx`
+
+### Header Section
+
+**Left side:**
+- Back button (← Volver)
+- Case title: "Caso #123"
+- Creation date: "Creado el 5 de marzo de 2026"
+
+**Right side:**
+- **ShimmerButton:** "Descargar PDF" with gradient background and shimmer animation
+
+### Information Cards
+
+<Tabs>
+  <Tab title="Personal Information">
+    **Card 1: Applicant (Solicitante)**
+
+    **Fields displayed:**
+    - **Nombre Completo:** `case.nombre`
+    - **DNI:** `case.dni`
+    - **Teléfono / WhatsApp:** Formatted with copy button
+      - Format: `+54 261 xxx...`
+      - Copy icon copies raw number to clipboard
+    - **Fecha de Nacimiento:** `DD/MM/YYYY` format
+    - **Domicilio:** Full address (2-column span)
+
+    **Icons:** Phone, Calendar, MapPin inline with labels
+
+    **Phone formatting logic:**
+    ```tsx
+    const formatPhoneDisplay = (phone: string) => {
+      const cleanPhone = phone.split('@')[0];
+      if (cleanPhone.length === 15 && cleanPhone.startsWith('54')) {
+        return `+${cleanPhone.slice(0,2)} ${cleanPhone.slice(2,5)} ${cleanPhone.slice(5)}`;
+      }
+      // ... additional formats
+    };
+    ```
+  </Tab>
+
+  <Tab title="Marriage Data">
+    **Conditional rendering:** Only shows if marriage data exists
+
+    **Fields:**
+    - **Fecha de Matrimonio:** `case.fecha_matrimonio`
+    - **Lugar de Matrimonio:** `case.lugar_matrimonio`
+
+    **Additional fields (if OCR extracted):**
+    - Acta número
+    - Libro y foja
+    - Año
+    - Oficina de registro
+
+    **Grid layout:** 2 columns
+  </Tab>
+
+  <Tab title="Economic Profile">
+    **Component:** `EconomicProfileCard`
+
+    **Renders twice for conjunta:**
+    1. Applicant profile
+    2. Spouse profile (`situacion_laboral_conyuge`, etc.)
+
+    **Data displayed:**
+    - **Situación Laboral:** Desocupado / Dependencia / Autónomo / etc.
+    - **Ingreso Mensual Neto:** Formatted as currency (if applicable)
+    - **Tipo de Vivienda:** Propia / Alquilada / Cedida
+    - **Alquiler Mensual:** Formatted as currency (if applicable)
+    - **Inmuebles:** Free text list
+    - **Bienes Registrables:** Free text (vehicles, etc.)
+    - **BLSG Preliminar:** ✅ Elegible / ❌ No elegible
+    - **Razones:** JSON breakdown of criteria
+
+    **Visual indicator:**
+    - Green badge if `econ_elegible_preliminar = true`
+    - Red badge if `false`
+
+    **Bot Report (conjunta only):**
+    - Combined analysis of both parties
+    - Criteria comparison
+    - Documentation checklist
+  </Tab>
+
+  <Tab title="Documents Viewer">
+    **Component:** `DocumentsViewer`
+
+    **Document sections:**
+
+    **1. DNI (Applicant)**
+    - Frente: `case.dni_image_url`
+    - Dorso: `case.dni_back_url`
+    - Missing indicator if not uploaded
+
+    **2. Marriage Certificate**
+    - Image: `case.marriage_cert_url`
+    - OCR extracted data displayed below image
+
+    **3. Support Documents**
+    - Collapsible accordion for each doc
+    - Type label (recibo_sueldo, afip_constancia, etc.)
+    - Upload date
+    - OCR summary (if available)
+    - View/download button
+
+    **Image display:**
+    ```tsx
+    <img
+      src={documentUrl}
+      alt="Document"
+      className="max-w-full h-auto rounded border"
+    />
+    ```
+
+    **Download handler:**
+    ```tsx
+    const handleDownload = (url: string) => {
+      window.open(url, '_blank');
+    };
+    ```
+  </Tab>
+
+  <Tab title="Conversation History">
+    **Message timeline component**
+
+    **Layout:**
+    - **User messages:** Blue bubble, right-aligned, user icon
+    - **Assistant messages:** Gray bubble, left-aligned, bot icon
+
+    **Each message includes:**
+    - Role indicator (User / Bot icon)
+    - Message content (whitespace preserved)
+    - Timestamp: `DD/MM/YYYY HH:mm`
+
+    **Scrollable:** Vertical scroll if conversation is long
+
+    **Empty state:** "No hay mensajes aún"
+
+    **Implementation:**
+    ```tsx
+    case_.messages.map((message) => (
+      <div className={`flex gap-3 ${message.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+        <div className="avatar-icon">{message.role === 'user' ? <User /> : <Bot />}</div>
+        <div className="message-bubble">
+          <p>{message.content}</p>
+          <p className="timestamp">{format(message.created_at, ...)}</p>
+        </div>
+      </div>
+    ))
+    ```
+  </Tab>
+</Tabs>
+
+### Sidebar (Right Column)
+
+<AccordionGroup>
+  <Accordion title="Estado del Caso" icon="traffic-light">
+    **Fields:**
+    - **Estado:** Badge with color (same as list view)
+    - **Tipo de Divorcio:** Unilateral / Conjunta (capitalized)
+    - **Fase Actual:** Current phase formatted (underscores to spaces)
+
+    **Special effect:**
+    If `status === 'documentacion_completa'`:
+    - **BorderBeam** component: Animated green glow border
+  </Accordion>
+
+  <Accordion title="Competencia" icon="gavel">
+    **Purpose:** Determine court jurisdiction
+
+    **Fields:**
+    - **Último domicilio conyugal:** Address display
+    - **Juzgado competente:** Heuristic badge
+
+    **Jurisdiction logic:**
+    ```tsx
+    if (ultimo_domicilio_conyugal.includes('san rafael')) {
+      return <Badge color="green">San Rafael</Badge>;
+    } else {
+      return <Badge color="amber">Otra jurisdicción</Badge>;
+    }
+    ```
+
+    **Disclaimer:** "Este indicador es orientativo y debe ser verificado por un operador."
+  </Accordion>
+
+  <Accordion title="Acciones" icon="bolt">
+    **Action buttons:**
+
+    **1. Descargar Demanda**
+    - Opens `PdfGenerationModal`
+    - Options: format, sections to include
+
+    **2. Contactar por WhatsApp**
+    - Direct link: `wa.me/{phone}`
+    - Pre-filled message template
+    - Handles phone normalization
+
+    **3. Solicitar documentación por WhatsApp**
+    - Opens `DocRequestModal`
+    - Pre-defined request types
+    - Sends system message via WAHA
+
+    **4. Enviar mensaje libre**
+    - Textarea for custom message
+    - "Enviar" button
+    - API: `POST /api/cases/{id}/operator-message`
+    - Request body: `{ "text": "message content" }`
+
+    **Phone display:**
+    Small text showing raw phone number (without @lid suffix)
+  </Accordion>
+
+  <Accordion title="Metadata" icon="info">
+    **Read-only information:**
+    - **ID del Caso:** `#{case.id}` (monospace font)
+    - **Fecha de Creación:** Full timestamp
+    - **Última Actualización:** Full timestamp
+    - **Mensajes:** Count of total messages
+
+    **Date format:** `DD/MM/YYYY HH:mm` in Spanish locale
+  </Accordion>
+</AccordionGroup>
+
+### Modals
+
+<CardGroup cols={2}>
+  <Card title="PDF Generation Modal" icon="file-pdf">
+    **Component:** `PdfGenerationModal`
+
+    **Options:**
+    - Document type (if applicable)
+    - Include children section (checkbox)
+    - Include assets section (checkbox)
+    - Format: PDF / DOCX
+
+    **Preview button:** Generate preview before download
+
+    **Download button:** Trigger actual download
+
+    **Close button:** Dismiss modal
+  </Card>
+
+  <Card title="Document Request Modal" icon="file-arrow-up">
+    **Component:** `DocRequestModal`
+
+    **Request types (radio buttons):**
+    - DNI faltante (dorso)
+    - Acta de matrimonio
+    - Comprobante de ingresos
+    - Documentación de bienes
+    - Otro (custom message)
+
+    **Custom message textarea** (if "Otro" selected)
+
+    **Submit button:**
+    1. Sends WhatsApp message via WAHA
+    2. Creates case note
+    3. Shows success toast
+    4. Closes modal
+  </Card>
+</CardGroup>
+
+---
+
+## Metrics & Reporting
+
+**API endpoints:** `backend/src/presentation/api/routes/metrics.py`
+
+### Available Metrics
+
+<ResponseField name="GET /api/metrics/summary" type="object">
+  **Returns:**
+  ```json
+  {
+    "total_cases": 150,
+    "recent_cases_7d": 12,
+    "recent_cases_30d": 48,
+    "by_status": {
+      "new": 45,
+      "datos_completos": 30,
+      "documentacion_completa": 75
+    }
+  }
+  ```
+
+  **Calculation:** Direct database queries with filters
+</ResponseField>
+
+<ResponseField name="GET /api/metrics/by_status" type="array">
+  **Returns:**
+  ```json
+  [
+    { "status": "new", "count": 45 },
+    { "status": "datos_completos", "count": 30 },
+    { "status": "documentacion_completa", "count": 75 }
+  ]
+  ```
+
+  **Use case:** Pie chart data
+</ResponseField>
+
+<ResponseField name="GET /api/metrics/timeline" type="array">
+  **Query params:** `days=30` (default)
+
+  **Returns:**
+  ```json
+  [
+    { "date": "2026-03-01", "count": 2 },
+    { "date": "2026-03-02", "count": 5 },
+    { "date": "2026-03-03", "count": 3 },
+    ...
+  ]
+  ```
+
+  **Calculation:** GROUP BY DATE(created_at)
+</ResponseField>
+
+---
+
+## User Management
+
+**Note:** Currently operator accounts are created via backend script. Future versions will include UI.
+
+### Authentication
+
+**Login route:** `/login`
+
+**Authentication flow:**
+1. User enters username and password
+2. `POST /api/auth/login` with credentials
+3. Backend validates against `users` table
+4. Returns JWT token + user data
+5. Token stored in `authStore` (Zustand)
+6. Token sent in `Authorization: Bearer {token}` header
+
+**Auto-refresh:** Token refresh on 401 responses
+
+### User Roles
+
+<CardGroup cols={2}>
+  <Card title="Operator" icon="user">
+    **Role:** `operator`
+
+    **Permissions:**
+    - View all cases
+    - View dashboard metrics
+    - Send messages to users
+    - Download PDFs
+    - Request documents
+    - Update case status (limited)
+  </Card>
+
+  <Card title="Admin" icon="user-shield">
+    **Role:** `admin`
+
+    **Additional permissions:**
+    - Create/edit users
+    - View system logs
+    - Advanced settings
+    - Bulk operations
+    - Export data
+  </Card>
+</CardGroup>
+
+**Future feature:** User management UI in settings
+
+---
+
+## UI Components Library
+
+### Magic UI Components
+
+**Animated components used for visual polish:**
+
+<AccordionGroup>
+  <Accordion title="NumberTicker" icon="1">
+    **Purpose:** Animated number counting
+
+    **Usage:**
+    ```tsx
+    <NumberTicker value={150} className="text-3xl" />
+    ```
+
+    **Effect:** Numbers count up from 0 to target value
+
+    **Used in:** Dashboard summary cards
+  </Accordion>
+
+  <Accordion title="BlurFade" icon="eye">
+    **Purpose:** Fade-in animation on mount
+
+    **Usage:**
+    ```tsx
+    <BlurFade delay={0.1}>
+      <Card>...</Card>
+    </BlurFade>
+    ```
+
+    **Effect:** Element fades in with slight blur effect
+
+    **Used in:** All major sections for staggered reveal
+  </Accordion>
+
+  <Accordion title="BorderBeam" icon="sparkles">
+    **Purpose:** Animated glowing border
+
+    **Usage:**
+    ```tsx
+    <Card className="relative overflow-hidden">
+      <BorderBeam size={200} duration={10} colorFrom="#10b981" colorTo="#34d399" />
+    </Card>
+    ```
+
+    **Effect:** Beam of light travels around border
+
+    **Used in:** Completed cases card, status badges
+  </Accordion>
+
+  <Accordion title="ShimmerButton" icon="wand-sparkles">
+    **Purpose:** Button with shimmer effect
+
+    **Usage:**
+    ```tsx
+    <ShimmerButton background="linear-gradient(...)" shimmerColor="#60a5fa">
+      Download PDF
+    </ShimmerButton>
+    ```
+
+    **Effect:** Shimmer light passes over button
+
+    **Used in:** Primary actions (Download PDF)
+  </Accordion>
+
+  <Accordion title="DotPattern" icon="grid">
+    **Purpose:** Decorative background pattern
+
+    **Usage:**
+    ```tsx
+    <div className="relative">
+      <DotPattern className="opacity-40" />
+      {/* content */}
+    </div>
+    ```
+
+    **Effect:** Subtle dot grid in background
+
+    **Used in:** Dashboard background
+  </Accordion>
+</AccordionGroup>
+
+### Standard UI Components
+
+**Location:** `frontend/src/shared/components/ui/`
+
+- **Button:** Variants (default, outline, ghost), sizes (sm, md, lg)
+- **Card:** Container with shadow and rounded corners
+- **Input:** Form input with consistent styling
+- **Badge:** Status indicators with color variants
+- **Tooltip:** Hover information
+- **Modal/Dialog:** Overlay for actions
+
+---
+
+## Keyboard Shortcuts
+
+**Future feature:** Planned keyboard shortcuts for operators
+
+**Proposed shortcuts:**
+- `Ctrl/Cmd + K`: Quick search (case ID or DNI)
+- `Ctrl/Cmd + N`: New manual case
+- `Ctrl/Cmd + D`: Download PDF (when in case detail)
+- `Ctrl/Cmd + M`: Send message (when in case detail)
+- `Esc`: Close modal/go back
+
+---
+
+## Performance Optimizations
+
+### Data Fetching
+
+**TanStack Query configuration:**
+```tsx
+const { data, isLoading } = useQuery({
+  queryKey: ['cases', filters],
+  queryFn: () => casesApi.getAll(filters),
+  staleTime: 1000 * 60 * 5, // 5 minutes
+  refetchInterval: 30000, // Auto-refresh metrics every 30s
+});
+```
+
+**Benefits:**
+- Automatic caching
+- Background refetching
+- Optimistic updates
+- Request deduplication
+
+### Pagination
+
+**Server-side pagination:**
+- Page size: 50 cases
+- Only fetches current page data
+- Total count from database
+
+**Client-side optimization:**
+- Virtual scrolling (future)
+- Lazy loading images
+
+---
+
+## Mobile Responsiveness
+
+**Breakpoints:**
+- `sm`: 640px
+- `md`: 768px
+- `lg`: 1024px
+- `xl`: 1280px
+
+**Layout adaptations:**
+- Dashboard: Cards stack vertically on mobile
+- Cases list: Horizontal scroll for table
+- Case detail: Single column on mobile, sidebar moves below
+- Charts: Responsive containers with `ResponsiveContainer`
+
+**Touch optimizations:**
+- Larger touch targets (buttons)
+- Swipe gestures (future)
+- Bottom sheet modals on mobile (future)
+
+---
+
+## Technical Implementation
+
+**Frontend stack:**
+- **React 18** with TypeScript
+- **Vite** for build tooling
+- **TanStack Query** for data fetching
+- **React Router** for navigation
+- **Zustand** for global state (auth)
+- **Recharts** for data visualization
+- **Tailwind CSS** for styling
+- **date-fns** for date formatting
+
+**Source files:**
+- `frontend/src/features/metrics/components/Dashboard.tsx`: Dashboard home
+- `frontend/src/features/cases/components/CasesList.tsx`: Cases list
+- `frontend/src/features/cases/components/CaseDetail.tsx`: Case detail (569 lines)
+- `frontend/src/features/cases/api/cases.api.ts`: API client
+- `frontend/src/shared/components/Layout/DashboardLayout.tsx`: Main layout with sidebar
+
+**API integration:**
+```typescript
+export const casesApi = {
+  getAll: (filters: CaseFilters) => 
+    axios.get('/api/cases', { params: filters }),
+  getById: (id: number) => 
+    axios.get(`/api/cases/${id}`),
+  downloadPetition: (id: number) => 
+    axios.get(`/api/cases/${id}/petition/pdf`, { responseType: 'blob' }),
+  sendOperatorMessage: (id: number, text: string) => 
+    axios.post(`/api/cases/${id}/operator-message`, { text }),
+};
+```

@@ -1,0 +1,440 @@
+---
+title: Development Environment Setup
+description: Complete guide to setting up your local development environment for the Defensoría Civil divorce platform
+---
+
+## Prerequisites
+
+Before starting, ensure you have the following installed:
+
+- **Python 3.12+** - Backend runtime
+- **Node.js 18+** & **npm** - Frontend tooling
+- **PostgreSQL 14+** - Database with pgvector extension
+- **Redis 7+** - Cache and task queue
+- **Git** - Version control
+- **Docker & Docker Compose** (optional but recommended)
+
+## Quick Start with Docker
+
+The fastest way to get started is using Docker Compose:
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd def-civil-divorcios
+
+# Copy environment configuration
+cp .env.example .env
+
+# Edit .env and add required API keys
+# GEMINI_API_KEY is MANDATORY
+nano .env
+
+# Start all services
+docker compose up --build
+
+# Verify the backend is running
+curl http://localhost:8000/health/
+```
+
+### Docker Services
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `api` | 8000 | FastAPI backend |
+| `worker` | - | Celery worker for async tasks |
+| `db` | 5433 | PostgreSQL with pgvector |
+| `redis` | 7379 | Redis for cache/queues |
+| `dashboard` | 5173 | React frontend |
+
+<Note>
+Note that Docker exposes PostgreSQL on port **5433** (not 5432) and Redis on **7379** (not 6379) to avoid conflicts with local installations.
+</Note>
+
+## Local Development Setup
+
+For faster iteration and debugging, you can run services locally:
+
+### Backend Setup
+
+#### 1. Create Python Virtual Environment
+
+```bash
+cd backend
+
+# Create virtual environment
+python3.12 -m venv venv
+
+# Activate (Linux/Mac)
+source venv/bin/activate
+
+# Activate (Windows)
+venv\Scripts\activate
+```
+
+#### 2. Install Dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Key dependencies:
+- `fastapi==0.115.0` - Web framework
+- `sqlalchemy==2.0.35` - ORM
+- `pydantic==2.8.2` - Data validation
+- `pytest==8.3.3` - Testing framework
+- `black==24.10.0` - Code formatter
+- `ruff==0.6.9` - Linter
+- `google-generativeai==0.8.1` - Gemini AI client
+
+#### 3. Database Setup
+
+Create the development database:
+
+```bash
+# Create database
+createdb def_civil
+
+# Enable pgvector extension
+psql def_civil -c "CREATE EXTENSION vector;"
+```
+
+Set the database URL in your `.env`:
+
+```env
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil
+```
+
+#### 4. Configure Environment Variables
+
+Copy and edit the environment file:
+
+```bash
+cp .env.example .env
+```
+
+Required variables:
+
+```env
+APP_ENV=development
+SECRET_KEY=change_me_to_random_32_char_string
+
+# Database
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/def_civil
+
+# Cache/Queue
+REDIS_URL=redis://localhost:6379/0
+
+# LLM Configuration
+GEMINI_API_KEY=your_gemini_api_key_here  # REQUIRED
+LLM_CHAT_MODEL=minimax-m2:cloud
+LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+LLM_VISION_MODEL=qwen3-vl:cloud
+
+# WhatsApp (optional for development)
+WAHA_BASE_URL=http://localhost:3000
+WAHA_API_KEY=changeme
+
+# Validation
+ALLOWED_JURISDICTIONS=San Rafael,Mendoza
+```
+
+#### 5. Set PYTHONPATH
+
+The project uses `src` layout, so you must set the Python path:
+
+```bash
+# Linux/Mac
+export PYTHONPATH=$(pwd)/src
+
+# Windows (PowerShell)
+$env:PYTHONPATH="$(pwd)\src"
+
+# Or add to .env (works in Docker)
+PYTHONPATH=/app/backend/src
+```
+
+#### 6. Run Development Server
+
+Start the backend with hot reload:
+
+```bash
+cd backend
+uvicorn presentation.api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Access:
+- API: http://localhost:8000
+- Interactive docs: http://localhost:8000/docs
+- Health check: http://localhost:8000/health/
+
+#### 7. Run Celery Worker (Optional)
+
+For async tasks like PDF generation and OCR:
+
+```bash
+cd backend/src
+celery -A infrastructure.tasks.celery_app.app worker -l info
+```
+
+### Frontend Setup
+
+#### 1. Install Dependencies
+
+```bash
+cd frontend
+npm install
+```
+
+Key dependencies:
+- `react` + `react-dom` - UI framework
+- `vite` - Build tool
+- `react-router-dom` - Routing
+- `@tanstack/react-query` - Data fetching
+- `axios` - HTTP client
+- `tailwindcss` - Styling
+- `typescript` - Type checking
+
+#### 2. Configure API Endpoint
+
+Create `.env.local` in `frontend/`:
+
+```env
+VITE_API_URL=http://localhost:8000
+```
+
+#### 3. Run Development Server
+
+```bash
+npm run dev
+```
+
+Access the dashboard at http://localhost:5173
+
+#### 4. Build for Production
+
+```bash
+npm run build
+npm run preview
+```
+
+## Git Workflow
+
+### Branch Strategy
+
+We follow a simplified Git Flow:
+
+- `main` - Production-ready code
+- `develop` - Integration branch for features
+- `feature/*` - New features (e.g., `feature/ocr-improvements`)
+- `fix/*` - Bug fixes (e.g., `fix/validation-error`)
+- `hotfix/*` - Emergency production fixes
+
+### Development Workflow
+
+1. **Create a feature branch:**
+
+```bash
+git checkout develop
+git pull origin develop
+git checkout -b feature/my-new-feature
+```
+
+2. **Make changes and commit:**
+
+```bash
+# Stage changes
+git add .
+
+# Commit with descriptive message
+git commit -m "Add address validation for San Rafael jurisdiction"
+```
+
+3. **Keep your branch updated:**
+
+```bash
+git fetch origin
+git rebase origin/develop
+```
+
+4. **Push and create Pull Request:**
+
+```bash
+git push origin feature/my-new-feature
+# Create PR on GitHub/GitLab
+```
+
+### Commit Message Convention
+
+Use clear, imperative messages:
+
+```
+Add validation for birth date minimum age
+Fix hallucination detection threshold
+Refactor LLM router fallback chain
+Update conversation engine state machine
+```
+
+## Debugging Configuration
+
+### VS Code Configuration
+
+Create `.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: FastAPI",
+      "type": "python",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "presentation.api.main:app",
+        "--reload",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/backend/src"
+      },
+      "jinja": true,
+      "justMyCode": false
+    },
+    {
+      "name": "Python: Pytest Current File",
+      "type": "python",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "${file}",
+        "-v"
+      ],
+      "cwd": "${workspaceFolder}/backend",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/backend/src"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
+```
+
+### PyCharm Configuration
+
+1. **Set PYTHONPATH:**
+   - Settings → Project → Project Structure
+   - Mark `backend/src` as "Sources Root"
+
+2. **Configure FastAPI run:**
+   - Run → Edit Configurations → Add New (Python)
+   - Module: `uvicorn`
+   - Parameters: `presentation.api.main:app --reload --host 0.0.0.0 --port 8000`
+   - Working directory: `backend/`
+
+3. **Configure pytest:**
+   - Settings → Tools → Python Integrated Tools
+   - Default test runner: `pytest`
+   - Working directory: `backend/`
+
+## Useful Development Commands
+
+### Database Management
+
+```bash
+# Connect to database
+psql def_civil
+
+# Reset database
+dropdb def_civil && createdb def_civil
+psql def_civil -c "CREATE EXTENSION vector;"
+
+# Clean test data (preserves users)
+python scripts/clean_test_data.py
+```
+
+### Code Quality
+
+```bash
+# Format code
+black backend/src backend/tests
+
+# Lint code
+ruff check backend/src backend/tests
+
+# Type checking (optional)
+mypy backend/src
+```
+
+### Testing
+
+```bash
+# Run all tests
+pytest backend/tests -v
+
+# Run specific test file
+pytest backend/tests/unit/test_llm_router.py -v
+
+# Run with coverage
+pytest backend/tests --cov=backend/src --cov-report=html
+```
+
+## Common Issues
+
+### "ModuleNotFoundError: No module named 'application'"
+
+**Solution:** Set PYTHONPATH correctly:
+
+```bash
+export PYTHONPATH=/path/to/backend/src
+```
+
+### "Extension 'vector' not found"
+
+**Solution:** Install pgvector:
+
+```bash
+# Ubuntu/Debian
+sudo apt install postgresql-14-pgvector
+
+# Mac
+brew install pgvector
+
+# Or use Docker with ankane/pgvector image
+```
+
+### "Connection to Redis failed"
+
+**Solution:** Start Redis:
+
+```bash
+# Linux
+sudo systemctl start redis
+
+# Mac
+brew services start redis
+
+# Docker
+docker run -d -p 6379:6379 redis:7-alpine
+```
+
+### Tests fail with "Database doesn't exist"
+
+**Solution:** Create test database:
+
+```bash
+createdb def_civil_test
+psql def_civil_test -c "CREATE EXTENSION vector;"
+```
+
+## Next Steps
+
+- Review [Testing Guide](/development/testing) for test strategies
+- Check [Coding Standards](/development/coding-standards) before contributing
+- Explore [Architecture Documentation](/architecture) to understand the system design

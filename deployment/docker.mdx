@@ -1,0 +1,358 @@
+---
+title: Docker Deployment
+description: Complete guide to deploying Defensoría Civil using Docker Compose
+---
+
+## Overview
+
+The Defensoría Civil platform uses Docker Compose to orchestrate multiple services including the FastAPI backend, Celery workers, PostgreSQL with pgvector, Redis, and the React dashboard.
+
+## Architecture
+
+The Docker Compose setup includes the following services:
+
+- **api**: FastAPI backend (port 8000)
+- **worker**: Celery worker for async tasks
+- **db**: PostgreSQL 16 with pgvector extension (port 5433)
+- **redis**: Redis 7 for caching and task queue (port 7379)
+- **dashboard**: React frontend served by Nginx (port 5173)
+
+## Docker Compose Configuration
+
+Here's the complete `docker-compose.yml` configuration:
+
+```yaml docker-compose.yml
+version: "3.9"
+services:
+  api:
+    build: ./backend
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/backend/src
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./backend:/app/backend
+  
+  worker:
+    build: ./backend
+    working_dir: /app/backend/src
+    command: sh -c "celery -A infrastructure.tasks.celery_app.app worker -l info"
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/backend/src
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+      - db
+    volumes:
+      - ./backend:/app/backend
+  
+  db:
+    image: ankane/pgvector:latest
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: def_civil
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "7379:6379"
+  
+  dashboard:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  waha_sessions:
+  waha_media:
+  postgres_data:
+```
+
+## Service Details
+
+### API Service
+
+The FastAPI backend uses a Python 3.12 slim image with custom SSL certificates for corporate environments.
+
+**Dockerfile** (`backend/Dockerfile`):
+
+```dockerfile backend/Dockerfile
+FROM python:3.12-slim
+
+# Ensure Python/pip do not buffer and disable pip cache
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Add corporate root CA and point OpenSSL/Requests to system bundle
+COPY certs/fortinet_corporate_root.crt /usr/local/share/ca-certificates/fortinet_corporate_root.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
+WORKDIR /app/backend
+COPY requirements.txt /app/backend/requirements.txt
+
+# Install required packages, register the corporate CA, then install Python deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        build-essential \
+    && update-ca-certificates \
+    && pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -r /app/backend/requirements.txt \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY src /app/backend/src
+ENV PYTHONPATH=/app/backend/src
+EXPOSE 8000
+CMD ["uvicorn", "presentation.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**Key Features:**
+- Python 3.12 slim base image for minimal footprint
+- Corporate SSL certificate support
+- Uvicorn ASGI server for high performance
+- Volume mount for development hot-reload
+
+### Worker Service
+
+The Celery worker handles asynchronous tasks like document processing, OCR, and LLM-based analysis.
+
+**Configuration:**
+- Uses the same backend Docker image
+- Runs Celery with INFO log level
+- Depends on Redis for task queue
+- Shares volume with API service
+
+### Database Service
+
+PostgreSQL with the pgvector extension for vector similarity search.
+
+**Key Details:**
+- Image: `ankane/pgvector:latest`
+- Database: `def_civil`
+- Port mapping: `5433:5432` (avoids conflicts with local PostgreSQL)
+- Persistent volume: `postgres_data`
+
+### Redis Service
+
+Redis for caching and Celery task queue.
+
+**Key Details:**
+- Image: `redis:7-alpine`
+- Port mapping: `7379:6379` (avoids conflicts with local Redis)
+- No persistence configured (ephemeral cache)
+
+### Dashboard Service
+
+React frontend built with Vite and served by Nginx.
+
+**Dockerfile** (`frontend/Dockerfile`):
+
+```dockerfile frontend/Dockerfile
+# Build stage
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy code and build
+COPY . .
+RUN npm run build
+
+# Production stage
+FROM nginx:stable-alpine
+
+# Copy build files to nginx directory
+COPY --from=build /app/dist /usr/share/nginx/html
+
+# Copy nginx configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+**Multi-stage Build:**
+1. **Build stage**: Node 20 Alpine for npm install and Vite build
+2. **Production stage**: Nginx Alpine serving static files
+
+## Port Mappings
+
+| Service | Container Port | Host Port | Purpose |
+|---------|---------------|-----------|----------|
+| api | 8000 | 8000 | FastAPI backend |
+| dashboard | 80 | 5173 | React frontend |
+| db | 5432 | 5433 | PostgreSQL |
+| redis | 6379 | 7379 | Redis cache/queue |
+
+## Volume Mounts
+
+### Development Volumes
+
+```yaml
+volumes:
+  - ./backend:/app/backend  # Hot-reload for backend
+  - ./frontend:/app          # Source code access
+```
+
+### Persistent Volumes
+
+```yaml
+volumes:
+  postgres_data:  # Database persistence
+  waha_sessions:  # WhatsApp session data (reserved)
+  waha_media:     # WhatsApp media files (reserved)
+```
+
+## Environment Configuration
+
+Create a `.env` file in the project root:
+
+```bash .env
+APP_ENV=development
+SECRET_KEY=change_me
+
+# Database
+DATABASE_URL=postgresql+psycopg2://postgres:postgres@db:5432/def_civil
+
+# Cache/Queue
+REDIS_URL=redis://redis:6379/0
+
+# WhatsApp (WAHA)
+WAHA_BASE_URL=http://waha:3000
+WAHA_API_KEY=changeme
+
+# Ollama Cloud (primary LLM provider)
+OLLAMA_CLOUD_API_KEY=
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+
+# Ollama Local (fallback)
+OLLAMA_BASE_URL=http://ollama:11434
+
+# Gemini (critical fallback)
+GEMINI_API_KEY=
+
+# Model configuration by task
+LLM_CHAT_MODEL=minimax-m2:cloud
+LLM_REASONING_MODEL=deepseek-v3.1:671b-cloud
+LLM_VISION_MODEL=qwen3-vl:cloud
+LLM_HALLUCINATION_MODEL=glm-4.6:cloud
+LLM_EMBEDDING_MODEL=nomic-embed-text
+
+# Validation
+ALLOWED_JURISDICTIONS=San Rafael,Mendoza
+```
+
+<Note>
+Never commit `.env` files with real credentials. Use `.env.example` as a template.
+</Note>
+
+## Running the Stack
+
+### Start all services
+
+```bash
+docker-compose up -d
+```
+
+### View logs
+
+```bash
+# All services
+docker-compose logs -f
+
+# Specific service
+docker-compose logs -f api
+```
+
+### Stop services
+
+```bash
+docker-compose down
+```
+
+### Rebuild after code changes
+
+```bash
+docker-compose up -d --build
+```
+
+## Database Migrations
+
+Run migrations inside the API container:
+
+```bash
+docker-compose exec api alembic upgrade head
+```
+
+## Health Checks
+
+Check service health:
+
+```bash
+# API health
+curl http://localhost:8000/health
+
+# Database connection
+docker-compose exec db psql -U postgres -d def_civil -c "SELECT 1;"
+
+# Redis connection
+docker-compose exec redis redis-cli ping
+```
+
+## Troubleshooting
+
+### Container won't start
+
+```bash
+# Check logs
+docker-compose logs api
+
+# Check resource usage
+docker stats
+```
+
+### Database connection errors
+
+```bash
+# Verify database is running
+docker-compose ps db
+
+# Check DATABASE_URL in .env matches service name
+echo $DATABASE_URL
+```
+
+### Volume permission issues
+
+```bash
+# Fix permissions
+sudo chown -R $USER:$USER ./backend
+sudo chown -R $USER:$USER ./frontend
+```
+
+## Next Steps
+
+- Review [Production Deployment](/deployment/production) for production-specific configuration
+- Configure [Security](/deployment/security) features for production use
+- Set up monitoring and logging

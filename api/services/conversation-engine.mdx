@@ -1,0 +1,201 @@
+---
+title: ConversationEngine
+description: Core conversation orchestration service for handling user interactions in the divorce platform
+---
+
+## Overview
+
+The `ConversationEngine` class orchestrates all incoming user messages through WhatsApp, managing the conversation flow as a finite-state machine. It integrates validation services, LLM routing, safety filtering, and database persistence.
+
+**Location:** `backend/src/application/services/conversation_engine.py:17-139`
+
+## Class Definition
+
+```python
+class ConversationEngine:
+    def __init__(self, db: Optional[Session] = None):
+        self.db = db or SessionLocal()
+        self.cases = CaseRepository(self.db)
+        self.messages = MessageRepository(self.db)
+        self.validator_resp = SimpleResponseValidationService()
+        self.validator_addr = SimpleAddressValidationService()
+        self.validator_date = SimpleDateValidationService()
+        self.user_recog = SimpleUserRecognitionService()
+        self.llm = LLMRouter()
+        self.safety = SafetyLayer()
+```
+
+## Dependencies
+
+The engine initializes with the following service dependencies:
+
+| Service | Type | Purpose |
+|---------|------|----------|
+| `db` | `Session` | SQLAlchemy database session |
+| `cases` | `CaseRepository` | Case data persistence |
+| `messages` | `MessageRepository` | Message history storage |
+| `validator_resp` | `SimpleResponseValidationService` | User response validation |
+| `validator_addr` | `SimpleAddressValidationService` | Address validation |
+| `validator_date` | `SimpleDateValidationService` | Date validation |
+| `user_recog` | `SimpleUserRecognitionService` | User identification |
+| `llm` | `LLMRouter` | LLM request routing |
+| `safety` | `SafetyLayer` | Input safety filtering |
+
+## Methods
+
+### handle_incoming()
+
+Main entry point for processing incoming user messages.
+
+```python
+async def handle_incoming(self, phone: str, text: str) -> str
+```
+
+**Parameters:**
+- `phone` (str): User's phone number (WhatsApp identifier)
+- `text` (str): Incoming message text from user
+
+**Returns:**
+- `str`: Response message to send back to user
+
+**Flow Logic:**
+
+1. **Safety filtering**: Blocks prompt injection attempts
+   ```python
+   safety_result = self.safety.filter_input(text)
+   if not safety_result.allowed:
+       return "No puedo procesar esa solicitud..."
+   ```
+
+2. **Case management**: Retrieves or creates case for phone number
+   ```python
+   case = self.cases.get_or_create_by_phone(phone)
+   ```
+
+3. **State machine routing**: Processes message based on current phase
+
+**Conversation Phases:**
+
+| Phase | Purpose | Validation | Next Phase |
+|-------|---------|------------|------------|
+| `inicio` | Welcome message | None | `tipo_divorcio` |
+| `tipo_divorcio` | Choose divorce type (unilateral/conjunta) | Keyword match | `nombre` |
+| `nombre` | Collect full name | `validate_user_response` | `dni` |
+| `dni` | Collect DNI (7-8 digits) | `validate_user_response` | `fecha_nacimiento` |
+| `fecha_nacimiento` | Collect birth date | `validate_birth_date` | `domicilio` |
+| `domicilio` | Collect address | `validate_address` | `documentacion` |
+| `documentacion` | Document upload phase | LLM fallback | (varies) |
+
+**Telemetry:**
+
+All interactions are traced with OpenTelemetry:
+
+```python
+with tracer.start_as_current_span("conversation.handle_incoming") as span:
+    span.set_attribute("conversation.phone", phone)
+    span.set_attribute("conversation.case_id", case.id)
+    span.set_attribute("conversation.phase", case.phase)
+```
+
+## Example Usage
+
+### Basic Initialization
+
+```python
+from application.services.conversation_engine import ConversationEngine
+from infrastructure.persistence.db import SessionLocal
+
+db = SessionLocal()
+engine = ConversationEngine(db)
+```
+
+### Processing a Message
+
+```python
+phone = "+5492604123456"
+user_message = "unilateral"
+
+response = await engine.handle_incoming(phone, user_message)
+print(response)  # "Perfecto. Ahora necesito algunos datos personales..."
+```
+
+### Phase Transition Example
+
+```python
+# User starts conversation
+resp1 = await engine.handle_incoming("+5492604123456", "Hola")
+# resp1: "¿Qué tipo de divorcio querés iniciar...?"
+
+# User responds with divorce type
+resp2 = await engine.handle_incoming("+5492604123456", "unilateral")
+# resp2: "Perfecto. Ahora necesito algunos datos personales. ¿Cuál es tu nombre completo?"
+
+# User provides name
+resp3 = await engine.handle_incoming("+5492604123456", "Juan Pérez")
+# resp3: "Gracias. ¿Cuál es tu número de DNI?"
+```
+
+## Error Handling
+
+### Validation Failures
+
+When validation fails, the engine stays in the current phase and prompts for correction:
+
+```python
+# conversation_engine.py:90-95
+if case.phase == "dni":
+    r = self.validator_resp.validate_user_response(text, "dni", "documento")
+    if not r.is_valid:
+        reply = "Ingresá un DNI válido de 7 u 8 dígitos."
+        self.messages.add_message(case.id, "assistant", reply)
+        return reply
+```
+
+### Safety Blocks
+
+Prompt injection attempts are blocked and logged:
+
+```python
+# conversation_engine.py:33-44
+if not safety_result.allowed:
+    span.set_attribute("conversation.blocked_reason", safety_result.reason)
+    reply = "No puedo procesar esa solicitud. Por favor reformulá tu mensaje..."
+    case = self.cases.get_or_create_by_phone(phone)
+    self.messages.add_message(case.id, "user", text)
+    self.messages.add_message(case.id, "assistant", reply)
+    return reply
+```
+
+## State Persistence
+
+All state transitions are persisted to the database:
+
+```python
+# conversation_engine.py:66-68
+case.type = "unilateral" if "unilateral" in low else "conjunta"
+case.phase = "nombre"
+self.cases.update(case)
+```
+
+## LLM Fallback
+
+For phases beyond structured data collection, the engine falls back to LLM-powered responses:
+
+```python
+# conversation_engine.py:131-138
+history = [
+    {"role": m.role, "content": m.content}
+    for m in reversed(self.messages.last_messages(case.id, limit=10))
+]
+answer = await self.llm.chat(history + [{"role": "user", "content": text}])
+self.messages.add_message(case.id, "assistant", answer)
+return answer
+```
+
+## See Also
+
+- [MemoryService](/api/services/memory-service) - Contextual memory management
+- [Validation Services](/api/services/validation-services) - Input validation implementations
+- [CaseRepository](/api/repositories/case-repository) - Case data access
+- [MessageRepository](/api/repositories/message-repository) - Message history access
+- [SafetyLayer](/api/infrastructure/safety-layer) - Input filtering

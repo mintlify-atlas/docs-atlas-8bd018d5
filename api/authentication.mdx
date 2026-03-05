@@ -1,0 +1,394 @@
+---
+title: Authentication
+description: User authentication, JWT token management, and role-based access control
+---
+
+The Defensoría Civil API uses JWT (JSON Web Tokens) for authentication. After logging in, you receive a token that must be included in subsequent requests.
+
+## JWT Token Structure
+
+Tokens include the following claims:
+
+```json
+{
+  "sub": "username",
+  "role": "operator",
+  "user_id": 123,
+  "exp": 1678901234
+}
+```
+
+- `sub`: Username of the authenticated user
+- `role`: User role (`operator` or `admin`)
+- `user_id`: Internal user ID
+- `exp`: Token expiration timestamp (24 hours from issuance)
+
+**Token Expiration:** Tokens expire after **24 hours**
+
+## User Roles
+
+The system supports two roles:
+
+| Role | Permissions |
+|------|-------------|
+| `operator` | Read and update cases, send messages, request documents |
+| `admin` | All operator permissions + user management |
+
+## Login
+
+<Note>
+  This endpoint does not require authentication.
+</Note>
+
+Authenticate a user and receive a JWT token.
+
+```http
+POST /api/auth/login
+```
+
+**Request Body:**
+
+<ParamField body="username" type="string" required>
+  User's username
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  User's password
+</ParamField>
+
+**Response (200):**
+
+<ResponseField name="access_token" type="string">
+  JWT token for authentication
+</ResponseField>
+
+<ResponseField name="token_type" type="string">
+  Always "bearer"
+</ResponseField>
+
+<ResponseField name="user" type="object">
+  Authenticated user information
+  
+  <Expandable title="User object properties">
+    <ResponseField name="id" type="integer">
+      User ID
+    </ResponseField>
+    
+    <ResponseField name="username" type="string">
+      Username
+    </ResponseField>
+    
+    <ResponseField name="email" type="string">
+      User's email address
+    </ResponseField>
+    
+    <ResponseField name="full_name" type="string">
+      User's full name
+    </ResponseField>
+    
+    <ResponseField name="role" type="string">
+      User role: "operator" or "admin"
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "operator1",
+    "password": "securepass123"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer",
+  "user": {
+    "id": 1,
+    "username": "operator1",
+    "email": "operator@defensoria.gov.ar",
+    "full_name": "Juan Pérez",
+    "role": "operator"
+  }
+}
+```
+
+**Error Responses:**
+
+- `401` - Invalid credentials
+- `403` - User account is deactivated
+
+## Register User
+
+<Note>
+  This endpoint does not require authentication. New users are created with "operator" role.
+</Note>
+
+Create a new user account.
+
+```http
+POST /api/auth/register
+```
+
+**Request Body:**
+
+<ParamField body="username" type="string" required>
+  Desired username (must be unique)
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Valid email address (must be unique)
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Password (minimum 6 characters)
+</ParamField>
+
+<ParamField body="full_name" type="string">
+  User's full name (optional)
+</ParamField>
+
+**Response (201):**
+
+<ResponseField name="id" type="integer">
+  New user ID
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  Username
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Email address
+</ResponseField>
+
+<ResponseField name="full_name" type="string">
+  Full name
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  Always "operator" for new registrations
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "maria.garcia",
+    "email": "maria.garcia@defensoria.gov.ar",
+    "password": "strongpass456",
+    "full_name": "María García"
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "id": 2,
+  "username": "maria.garcia",
+  "email": "maria.garcia@defensoria.gov.ar",
+  "full_name": "María García",
+  "role": "operator"
+}
+```
+
+**Error Responses:**
+
+- `400` - Username or email already exists, or password too short
+- `422` - Invalid email format
+
+## Get Current User
+
+<Note>
+  Requires authentication.
+</Note>
+
+Retrieve information about the currently authenticated user.
+
+```http
+GET /api/auth/me
+```
+
+**Headers:**
+
+```http
+Authorization: Bearer <token>
+```
+
+**Response (200):**
+
+<ResponseField name="id" type="integer">
+  User ID
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  Username
+</ResponseField>
+
+<ResponseField name="email" type="string">
+  Email address
+</ResponseField>
+
+<ResponseField name="full_name" type="string">
+  Full name
+</ResponseField>
+
+<ResponseField name="role" type="string">
+  User role
+</ResponseField>
+
+<ResponseField name="is_active" type="boolean">
+  Whether user account is active
+</ResponseField>
+
+<ResponseField name="created_at" type="string">
+  Account creation timestamp (ISO 8601)
+</ResponseField>
+
+**Example:**
+
+```bash
+curl -X GET http://localhost:8000/api/auth/me \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+**Response:**
+
+```json
+{
+  "id": 1,
+  "username": "operator1",
+  "email": "operator@defensoria.gov.ar",
+  "full_name": "Juan Pérez",
+  "role": "operator",
+  "is_active": true,
+  "created_at": "2026-01-15T10:30:00"
+}
+```
+
+**Error Responses:**
+
+- `401` - Invalid or expired token
+- `404` - User not found
+
+## Refresh Token
+
+<Note>
+  Requires authentication.
+</Note>
+
+Generate a new JWT token with extended expiration.
+
+```http
+POST /api/auth/refresh
+```
+
+**Headers:**
+
+```http
+Authorization: Bearer <current_token>
+```
+
+**Response (200):**
+
+Same format as login response with a new `access_token`.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/api/auth/refresh \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+**Response:**
+
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.NEW_TOKEN...",
+  "token_type": "bearer",
+  "user": {
+    "id": 1,
+    "username": "operator1",
+    "email": "operator@defensoria.gov.ar",
+    "full_name": "Juan Pérez",
+    "role": "operator"
+  }
+}
+```
+
+**Error Responses:**
+
+- `401` - Invalid token
+- `403` - User account deactivated
+- `404` - User not found
+
+## Logout
+
+<Note>
+  Requires authentication.
+</Note>
+
+Logout endpoint. Since JWT is stateless, clients must delete the token locally.
+
+```http
+POST /api/auth/logout
+```
+
+**Headers:**
+
+```http
+Authorization: Bearer <token>
+```
+
+**Response (200):**
+
+```json
+{
+  "message": "Logout exitoso. Elimine el token del cliente."
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/api/auth/logout \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+<Warning>
+  To implement true token invalidation, a token blacklist in Redis would be required. Currently, logout is client-side only.
+</Warning>
+
+## Authentication Flow
+
+1. **Login**: Call `POST /api/auth/login` with username and password
+2. **Store Token**: Save the `access_token` securely (e.g., localStorage, sessionStorage)
+3. **Include in Requests**: Add `Authorization: Bearer <token>` header to all API calls
+4. **Handle Expiration**: Tokens expire after 24 hours. Either:
+   - Call `POST /api/auth/refresh` to get a new token
+   - Redirect user to login page on 401 errors
+5. **Logout**: Call `POST /api/auth/logout` and delete the stored token
+
+## Security Best Practices
+
+- Store tokens securely (never in URLs or cookies without httpOnly flag)
+- Use HTTPS in production to prevent token interception
+- Implement automatic token refresh before expiration
+- Clear tokens on logout
+- Handle 401 errors by redirecting to login
+
+## Implementation Reference
+
+See the implementation in:
+- `backend/src/presentation/api/routes/auth.py` - Auth endpoints
+- `backend/src/application/use_cases/authenticate_user.py` - Authentication logic
+- `backend/src/presentation/api/dependencies/security.py` - JWT validation
