@@ -7,11 +7,7 @@
     "light": "#545454",
     "dark": "#94cb04"
   },
-  "favicon": "/favicon.png",
-  "logo": {
-    "light": "/logo.png",
-    "dark": "/logo.png"
-  },
+  "favicon": "/favicon.svg",
   "navbar": {
     "primary": {
       "type": "github",
@@ -88,6 +84,7 @@
             "pages": [
               "api/overview",
               "api/authentication",
+              "api/users",
               "api/webhooks",
               "api/cases",
               "api/metrics"
